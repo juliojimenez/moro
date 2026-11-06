@@ -1,0 +1,558 @@
+{
+  "name": "moro",
+  "displayName": "Moro",
+  "description": "Common Lisp for Visual Studio Code: syntax highlighting, language server, REPL integration and structural editing.",
+  "version": "0.1.0",
+  "publisher": "juliojimenez",
+  "license": "Apache-2.0",
+  "author": {
+    "name": "Julio Jimenez"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/juliojimenez/moro.git"
+  },
+  "bugs": {
+    "url": "https://github.com/juliojimenez/moro/issues"
+  },
+  "homepage": "https://github.com/juliojimenez/moro#readme",
+  "icon": "icons/moro.png",
+  "galleryBanner": {
+    "color": "#1565c0",
+    "theme": "dark"
+  },
+  "engines": {
+    "vscode": "^1.91.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Snippets",
+    "Formatters",
+    "Linters"
+  ],
+  "keywords": [
+    "lisp",
+    "common lisp",
+    "sbcl",
+    "repl",
+    "language server",
+    "asdf"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onLanguage:commonlisp"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "In untrusted workspaces the REPL command and arguments are taken from user settings only, never from workspace settings.",
+      "restrictedConfigurations": [
+        "moro.repl.command",
+        "moro.repl.args"
+      ]
+    },
+    "virtualWorkspaces": {
+      "supported": "limited",
+      "description": "The REPL and file loading need a local file system; editing features work everywhere."
+    }
+  },
+  "contributes": {
+    "languages": [
+      {
+        "id": "commonlisp",
+        "aliases": [
+          "Common Lisp",
+          "commonlisp",
+          "Lisp"
+        ],
+        "extensions": [
+          ".lisp",
+          ".lsp",
+          ".cl",
+          ".asd",
+          ".asdf",
+          ".ros"
+        ],
+        "filenames": [
+          ".sbclrc",
+          ".eclrc",
+          ".ccl-init.lisp",
+          ".clisprc",
+          ".clisprc.lisp",
+          ".abclrc",
+          ".cmucl-init.lisp",
+          ".clinit.cl"
+        ],
+        "firstLine": "^#!.*\\b(sbcl|ros|ecl|ccl|clisp|abcl|lisp)\\b",
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "commonlisp",
+        "scopeName": "source.commonlisp",
+        "path": "./syntaxes/commonlisp.tmLanguage.json"
+      },
+      {
+        "scopeName": "markdown.commonlisp.codeblock",
+        "path": "./syntaxes/markdown-injection.json",
+        "injectTo": [
+          "text.html.markdown"
+        ],
+        "embeddedLanguages": {
+          "meta.embedded.block.commonlisp": "commonlisp"
+        }
+      }
+    ],
+    "snippets": [
+      {
+        "language": "commonlisp",
+        "path": "./snippets/commonlisp.json"
+      }
+    ],
+    "semanticTokenScopes": [
+      {
+        "language": "commonlisp",
+        "scopes": {
+          "macro": [
+            "keyword.control.commonlisp"
+          ],
+          "function": [
+            "entity.name.function.commonlisp"
+          ],
+          "parameter": [
+            "variable.parameter.commonlisp"
+          ],
+          "variable": [
+            "variable.other.local.commonlisp"
+          ]
+        }
+      }
+    ],
+    "configurationDefaults": {
+      "[commonlisp]": {
+        "editor.formatOnType": true,
+        "editor.insertSpaces": true,
+        "editor.tabSize": 2,
+        "editor.wordBasedSuggestions": "off"
+      }
+    },
+    "configuration": {
+      "title": "Moro",
+      "properties": {
+        "moro.repl.command": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Executable used to start the REPL. Leave empty to use the first of `sbcl`, `ros`, `ccl`, `ccl64`, `ecl`, `clisp`, `abcl` found on your PATH.",
+          "scope": "machine-overridable"
+        },
+        "moro.repl.args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "Extra arguments passed to the REPL executable. SBCL gets `--noinform` and Roswell gets `run` automatically.",
+          "scope": "machine-overridable"
+        },
+        "moro.repl.syncPackage": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Before evaluating a form, switch the REPL to the package named by the closest preceding `(in-package ...)` in the file, when that package exists in the image."
+        },
+        "moro.repl.systemLoader": {
+          "type": "string",
+          "enum": [
+            "asdf",
+            "quicklisp"
+          ],
+          "enumDescriptions": [
+            "(asdf:load-system \"name\")",
+            "(ql:quickload \"name\")"
+          ],
+          "default": "asdf",
+          "description": "How the Load System command loads an ASDF system."
+        },
+        "moro.repl.revealOnEval": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show the REPL terminal (without taking focus) when a form is sent to it."
+        },
+        "moro.indentation.specs": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "default": {},
+          "markdownDescription": "Extra indentation specs: operator name to the number of distinguished arguments, like Emacs `lisp-indent-function`. Example: `{ \"with-transaction\": 1, \"deftest\": 1 }`. Overrides the built-in table."
+        },
+        "moro.indexing.exclude": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "**/node_modules/**",
+            "**/.git/**",
+            "**/quicklisp/dists/**",
+            "**/.qlot/**",
+            "**/.cache/**"
+          ],
+          "description": "Glob patterns for files and folders the workspace index skips."
+        },
+        "moro.indexing.maxFiles": {
+          "type": "integer",
+          "default": 3000,
+          "minimum": 0,
+          "description": "Maximum number of Lisp files indexed per workspace."
+        },
+        "moro.diagnostics.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Report unbalanced parentheses, unterminated strings and unterminated block comments."
+        },
+        "moro.hover.hyperspecUrl": {
+          "type": "string",
+          "default": "http://www.lispworks.com/documentation/HyperSpec/Body/",
+          "description": "Base URL of the Common Lisp HyperSpec used for the links in hovers. Point it at a local mirror if you have one."
+        },
+        "moro.trace.server": {
+          "type": "string",
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
+          "default": "off",
+          "description": "Trace the communication between VS Code and the Moro language server."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "moro.repl.start",
+        "title": "Start REPL",
+        "category": "Moro"
+      },
+      {
+        "command": "moro.repl.stop",
+        "title": "Stop REPL",
+        "category": "Moro"
+      },
+      {
+        "command": "moro.repl.restart",
+        "title": "Restart REPL",
+        "category": "Moro"
+      },
+      {
+        "command": "moro.repl.evalTopLevelForm",
+        "title": "Evaluate Top-Level Form",
+        "category": "Moro"
+      },
+      {
+        "command": "moro.repl.evalLastForm",
+        "title": "Evaluate Selection or Last Form",
+        "category": "Moro"
+      },
+      {
+        "command": "moro.repl.evalBuffer",
+        "title": "Evaluate Buffer",
+        "category": "Moro"
+      },
+      {
+        "command": "moro.repl.loadFile",
+        "title": "Load File",
+        "category": "Moro"
+      },
+      {
+        "command": "moro.repl.compileAndLoadFile",
+        "title": "Compile and Load File",
+        "category": "Moro"
+      },
+      {
+        "command": "moro.repl.loadSystem",
+        "title": "Load ASDF System",
+        "category": "Moro"
+      },
+      {
+        "command": "moro.repl.testSystem",
+        "title": "Test ASDF System",
+        "category": "Moro"
+      },
+      {
+        "command": "moro.repl.macroexpand1",
+        "title": "Macroexpand-1 Form",
+        "category": "Moro"
+      },
+      {
+        "command": "moro.repl.macroexpand",
+        "title": "Macroexpand Form",
+        "category": "Moro"
+      },
+      {
+        "command": "moro.repl.describe",
+        "title": "Describe Symbol",
+        "category": "Moro"
+      },
+      {
+        "command": "moro.repl.apropos",
+        "title": "Apropos",
+        "category": "Moro"
+      },
+      {
+        "command": "moro.repl.syncPackage",
+        "title": "Switch REPL to File's Package",
+        "category": "Moro"
+      },
+      {
+        "command": "moro.repl.interrupt",
+        "title": "Interrupt Evaluation",
+        "category": "Moro"
+      },
+      {
+        "command": "moro.edit.slurpForward",
+        "title": "Slurp Forward",
+        "category": "Moro"
+      },
+      {
+        "command": "moro.edit.barfForward",
+        "title": "Barf Forward",
+        "category": "Moro"
+      },
+      {
+        "command": "moro.edit.spliceForm",
+        "title": "Splice Form",
+        "category": "Moro"
+      },
+      {
+        "command": "moro.edit.raiseForm",
+        "title": "Raise Form",
+        "category": "Moro"
+      },
+      {
+        "command": "moro.edit.wrapParens",
+        "title": "Wrap in Parentheses",
+        "category": "Moro"
+      },
+      {
+        "command": "moro.edit.selectTopLevelForm",
+        "title": "Select Top-Level Form",
+        "category": "Moro"
+      },
+      {
+        "command": "moro.server.restart",
+        "title": "Restart Language Server",
+        "category": "Moro"
+      }
+    ],
+    "submenus": [
+      {
+        "id": "moro.editorContext",
+        "label": "Moro"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "submenu": "moro.editorContext",
+          "group": "navigation@9",
+          "when": "editorLangId == commonlisp"
+        }
+      ],
+      "moro.editorContext": [
+        {
+          "command": "moro.repl.evalTopLevelForm",
+          "group": "1_eval@1"
+        },
+        {
+          "command": "moro.repl.evalLastForm",
+          "group": "1_eval@2"
+        },
+        {
+          "command": "moro.repl.loadFile",
+          "group": "1_eval@3"
+        },
+        {
+          "command": "moro.repl.compileAndLoadFile",
+          "group": "1_eval@4"
+        },
+        {
+          "command": "moro.repl.macroexpand1",
+          "group": "2_inspect@1"
+        },
+        {
+          "command": "moro.repl.describe",
+          "group": "2_inspect@2"
+        },
+        {
+          "command": "moro.repl.start",
+          "group": "3_repl@1"
+        },
+        {
+          "command": "moro.repl.loadSystem",
+          "group": "3_repl@2"
+        },
+        {
+          "command": "moro.repl.interrupt",
+          "group": "3_repl@3"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "moro.repl.evalTopLevelForm",
+          "when": "editorLangId == commonlisp"
+        },
+        {
+          "command": "moro.repl.evalLastForm",
+          "when": "editorLangId == commonlisp"
+        },
+        {
+          "command": "moro.repl.evalBuffer",
+          "when": "editorLangId == commonlisp"
+        },
+        {
+          "command": "moro.repl.loadFile",
+          "when": "editorLangId == commonlisp"
+        },
+        {
+          "command": "moro.repl.compileAndLoadFile",
+          "when": "editorLangId == commonlisp"
+        },
+        {
+          "command": "moro.repl.macroexpand1",
+          "when": "editorLangId == commonlisp"
+        },
+        {
+          "command": "moro.repl.macroexpand",
+          "when": "editorLangId == commonlisp"
+        },
+        {
+          "command": "moro.repl.describe",
+          "when": "editorLangId == commonlisp"
+        },
+        {
+          "command": "moro.repl.syncPackage",
+          "when": "editorLangId == commonlisp"
+        },
+        {
+          "command": "moro.edit.slurpForward",
+          "when": "editorLangId == commonlisp"
+        },
+        {
+          "command": "moro.edit.barfForward",
+          "when": "editorLangId == commonlisp"
+        },
+        {
+          "command": "moro.edit.spliceForm",
+          "when": "editorLangId == commonlisp"
+        },
+        {
+          "command": "moro.edit.raiseForm",
+          "when": "editorLangId == commonlisp"
+        },
+        {
+          "command": "moro.edit.wrapParens",
+          "when": "editorLangId == commonlisp"
+        },
+        {
+          "command": "moro.edit.selectTopLevelForm",
+          "when": "editorLangId == commonlisp"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "moro.repl.evalTopLevelForm",
+        "key": "ctrl+enter",
+        "when": "editorTextFocus && editorLangId == commonlisp"
+      },
+      {
+        "command": "moro.repl.evalLastForm",
+        "key": "shift+enter",
+        "when": "editorTextFocus && editorLangId == commonlisp"
+      },
+      {
+        "command": "moro.repl.loadFile",
+        "key": "ctrl+alt+l",
+        "when": "editorTextFocus && editorLangId == commonlisp"
+      },
+      {
+        "command": "moro.repl.compileAndLoadFile",
+        "key": "ctrl+alt+k",
+        "when": "editorTextFocus && editorLangId == commonlisp"
+      },
+      {
+        "command": "moro.repl.macroexpand1",
+        "key": "ctrl+alt+m",
+        "when": "editorTextFocus && editorLangId == commonlisp"
+      },
+      {
+        "command": "moro.repl.describe",
+        "key": "ctrl+alt+d",
+        "when": "editorTextFocus && editorLangId == commonlisp"
+      },
+      {
+        "command": "moro.repl.start",
+        "key": "ctrl+alt+r",
+        "when": "editorLangId == commonlisp"
+      },
+      {
+        "command": "moro.repl.interrupt",
+        "key": "ctrl+alt+b",
+        "when": "editorLangId == commonlisp"
+      },
+      {
+        "command": "moro.edit.slurpForward",
+        "key": "ctrl+alt+right",
+        "when": "editorTextFocus && editorLangId == commonlisp"
+      },
+      {
+        "command": "moro.edit.barfForward",
+        "key": "ctrl+alt+left",
+        "when": "editorTextFocus && editorLangId == commonlisp"
+      },
+      {
+        "command": "moro.edit.spliceForm",
+        "key": "ctrl+alt+s",
+        "when": "editorTextFocus && editorLangId == commonlisp"
+      },
+      {
+        "command": "moro.edit.raiseForm",
+        "key": "ctrl+alt+p",
+        "when": "editorTextFocus && editorLangId == commonlisp"
+      },
+      {
+        "command": "moro.edit.wrapParens",
+        "key": "ctrl+alt+w",
+        "when": "editorTextFocus && editorLangId == commonlisp"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run build -- --production",
+    "build": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "check": "tsc --noEmit",
+    "compile-tests": "tsc -p tsconfig.test.json",
+    "test": "npm run build && npm run compile-tests && node --test \"out/test/**/*.test.js\" && npm run test:grammar",
+    "test:grammar": "vscode-tmgrammar-test -g syntaxes/commonlisp.tmLanguage.json \"test/grammar/*.lisp\"",
+    "grammar": "node tools/build-grammar.mjs",
+    "symbols": "sbcl --script tools/gen-cl-symbols.lisp \"${CLHS_MAP:-}\" > data/cl-symbols.json",
+    "package": "vsce package",
+    "clean": "rm -rf dist out *.vsix"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^11.0.0",
+    "vscode-languageserver": "^11.0.0",
+    "vscode-languageserver-textdocument": "^1.0.16"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/vscode": "^1.91.0",
+    "@vscode/vsce": "^4.1.0",
+    "esbuild": "^0.28.2",
+    "typescript": "^5.9.3",
+    "vscode-tmgrammar-test": "^0.1.3"
+  }
+}

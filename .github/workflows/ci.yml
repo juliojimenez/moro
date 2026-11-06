@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }}, node ${{ matrix.node }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        node: [22, 24]
+        include:
+          - os: macos-latest
+            node: 24
+          - os: windows-latest
+            node: 24
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Type check
+        run: npm run check
+
+      - name: Build
+        run: npm run build
+
+      - name: Test
+        run: npm test
+
+      - name: Generated grammar is up to date
+        if: runner.os == 'Linux'
+        run: |
+          npm run grammar
+          git diff --exit-code -- syntaxes/
+
+      - name: Package
+        if: runner.os == 'Linux' && matrix.node == 24
+        run: npx @vscode/vsce package --out moro.vsix
+
+      - name: Upload package
+        if: runner.os == 'Linux' && matrix.node == 24
+        uses: actions/upload-artifact@v7
+        with:
+          name: moro-vsix
+          path: moro.vsix

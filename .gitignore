@@ -15,3 +15,11 @@
 *.sx32fsl
 *.wx64fsl
 *.wx32fsl
+
+# Node / extension build
+node_modules/
+dist/
+out/
+*.vsix
+.vscode-test/
+.DS_Store
