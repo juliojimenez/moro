@@ -73,10 +73,14 @@ The REPL is a plain terminal, so anything your implementation prints is shown as
 
 ## Known limitations
 
-- The server has no live image: completion, hover and signature help know the standard library and what is written in the workspace, not what is loaded in your REPL. Macroexpansion, describe and apropos go through the REPL for that reason.
-- Highlighting cannot tell a type from a function with the same name (`string`, `list`, `error`), so `(error (e) ...)` in `handler-case` is colored as a call. Definer names must be on the same line as the definer.
-- Indentation follows SLIME for the standard operators and uses `&body` arity for your macros; LOOP indentation unwinds only one level of nested `when`/`if`/`unless`, and continuation keywords on their own line (`in`, `by`, `=`) align under the previous clause's form rather than four columns in.
-- The REPL is a terminal: there is no inspector, no debugger UI and no return-value capture beyond what the implementation prints.
+Each one is tracked as an issue; fix sketches are in the issue bodies.
+
+- The server has no live image: completion, hover and signature help know the standard library and what is written in the workspace, not what is loaded in your REPL ([#6](https://github.com/juliojimenez/moro/issues/6)). Macroexpansion, describe and apropos go through the REPL for that reason.
+- The REPL is a terminal: there is no inspector, no debugger UI and no return-value capture beyond what the implementation prints ([#7](https://github.com/juliojimenez/moro/issues/7)).
+- References and rename match symbol names across packages, and package nicknames are not resolved ([#8](https://github.com/juliojimenez/moro/issues/8)).
+- Highlighting cannot tell a type from a function with the same name, so `(error (e) ...)` in `handler-case` is colored as a call ([#1](https://github.com/juliojimenez/moro/issues/1)); definer names must be on the same line as the definer ([#2](https://github.com/juliojimenez/moro/issues/2)); compound `#+` expressions and multi-line `|...|` symbols get plain scoping ([#3](https://github.com/juliojimenez/moro/issues/3)).
+- LOOP indentation unwinds only one level of nested `when`/`if`/`unless`, and continuation keywords on their own line align under the previous clause's form rather than four columns in ([#4](https://github.com/juliojimenez/moro/issues/4)); a `#+feature` on its own line counts as an argument ([#5](https://github.com/juliojimenez/moro/issues/5)).
+- No tests run inside a real VS Code window yet ([#9](https://github.com/juliojimenez/moro/issues/9)).
 
 ## Development
 
