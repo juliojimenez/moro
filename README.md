@@ -1,4 +1,4 @@
-# Moro
+# moro
 
 Common Lisp for Visual Studio Code: syntax highlighting, a language server, a REPL that works with any implementation, and structural editing. No Lisp-side dependencies: the language server is bundled with the extension and understands your code without a running image.
 
@@ -46,7 +46,7 @@ All bindings apply in Common Lisp editors only.
 | Raise form | `Ctrl+Alt+P` |
 | Wrap in parentheses | `Ctrl+Alt+W` |
 
-Every command is also in the command palette under the **Moro** category and in the editor context menu.
+Every command is also in the command palette under the **moro** category and in the editor context menu.
 
 ## Settings
 

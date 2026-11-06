@@ -94,7 +94,7 @@ export class Repl implements vscode.Disposable {
       if (resolved) return { command: resolved, args: [...implicitArgs(resolved), ...extraArgs] };
     }
     const choice = await vscode.window.showErrorMessage(
-      'Moro could not find a Common Lisp implementation (sbcl, ros, ccl, ecl, clisp or abcl) on your PATH.',
+      'moro could not find a Common Lisp implementation (sbcl, ros, ccl, ecl, clisp or abcl) on your PATH.',
       'Open Settings',
     );
     if (choice === 'Open Settings') {
@@ -119,7 +119,7 @@ export class Repl implements vscode.Disposable {
     this.terminal?.dispose();
     this.lastPackage = null;
     this.terminal = vscode.window.createTerminal({
-      name: 'Moro REPL',
+      name: 'moro REPL',
       shellPath: resolved.command,
       shellArgs: resolved.args,
       cwd: this.workingDirectory(),

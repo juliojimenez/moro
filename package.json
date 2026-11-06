@@ -1,8 +1,8 @@
 {
   "name": "moro",
-  "displayName": "Moro",
+  "displayName": "moro",
   "description": "Common Lisp for Visual Studio Code: syntax highlighting, language server, REPL integration and structural editing.",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "publisher": "juliojimenez",
   "license": "Apache-2.0",
   "author": {
@@ -141,7 +141,7 @@
       }
     },
     "configuration": {
-      "title": "Moro",
+      "title": "moro",
       "properties": {
         "moro.repl.command": {
           "type": "string",
@@ -228,7 +228,7 @@
             "verbose"
           ],
           "default": "off",
-          "description": "Trace the communication between VS Code and the Moro language server."
+          "description": "Trace the communication between VS Code and the moro language server."
         }
       }
     },
@@ -236,123 +236,123 @@
       {
         "command": "moro.repl.start",
         "title": "Start REPL",
-        "category": "Moro"
+        "category": "moro"
       },
       {
         "command": "moro.repl.stop",
         "title": "Stop REPL",
-        "category": "Moro"
+        "category": "moro"
       },
       {
         "command": "moro.repl.restart",
         "title": "Restart REPL",
-        "category": "Moro"
+        "category": "moro"
       },
       {
         "command": "moro.repl.evalTopLevelForm",
         "title": "Evaluate Top-Level Form",
-        "category": "Moro"
+        "category": "moro"
       },
       {
         "command": "moro.repl.evalLastForm",
         "title": "Evaluate Selection or Last Form",
-        "category": "Moro"
+        "category": "moro"
       },
       {
         "command": "moro.repl.evalBuffer",
         "title": "Evaluate Buffer",
-        "category": "Moro"
+        "category": "moro"
       },
       {
         "command": "moro.repl.loadFile",
         "title": "Load File",
-        "category": "Moro"
+        "category": "moro"
       },
       {
         "command": "moro.repl.compileAndLoadFile",
         "title": "Compile and Load File",
-        "category": "Moro"
+        "category": "moro"
       },
       {
         "command": "moro.repl.loadSystem",
         "title": "Load ASDF System",
-        "category": "Moro"
+        "category": "moro"
       },
       {
         "command": "moro.repl.testSystem",
         "title": "Test ASDF System",
-        "category": "Moro"
+        "category": "moro"
       },
       {
         "command": "moro.repl.macroexpand1",
         "title": "Macroexpand-1 Form",
-        "category": "Moro"
+        "category": "moro"
       },
       {
         "command": "moro.repl.macroexpand",
         "title": "Macroexpand Form",
-        "category": "Moro"
+        "category": "moro"
       },
       {
         "command": "moro.repl.describe",
         "title": "Describe Symbol",
-        "category": "Moro"
+        "category": "moro"
       },
       {
         "command": "moro.repl.apropos",
         "title": "Apropos",
-        "category": "Moro"
+        "category": "moro"
       },
       {
         "command": "moro.repl.syncPackage",
         "title": "Switch REPL to File's Package",
-        "category": "Moro"
+        "category": "moro"
       },
       {
         "command": "moro.repl.interrupt",
         "title": "Interrupt Evaluation",
-        "category": "Moro"
+        "category": "moro"
       },
       {
         "command": "moro.edit.slurpForward",
         "title": "Slurp Forward",
-        "category": "Moro"
+        "category": "moro"
       },
       {
         "command": "moro.edit.barfForward",
         "title": "Barf Forward",
-        "category": "Moro"
+        "category": "moro"
       },
       {
         "command": "moro.edit.spliceForm",
         "title": "Splice Form",
-        "category": "Moro"
+        "category": "moro"
       },
       {
         "command": "moro.edit.raiseForm",
         "title": "Raise Form",
-        "category": "Moro"
+        "category": "moro"
       },
       {
         "command": "moro.edit.wrapParens",
         "title": "Wrap in Parentheses",
-        "category": "Moro"
+        "category": "moro"
       },
       {
         "command": "moro.edit.selectTopLevelForm",
         "title": "Select Top-Level Form",
-        "category": "Moro"
+        "category": "moro"
       },
       {
         "command": "moro.server.restart",
         "title": "Restart Language Server",
-        "category": "Moro"
+        "category": "moro"
       }
     ],
     "submenus": [
       {
         "id": "moro.editorContext",
-        "label": "Moro"
+        "label": "moro"
       }
     ],
     "menus": {

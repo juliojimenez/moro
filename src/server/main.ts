@@ -1,5 +1,5 @@
 /**
- * Moro language server entry point: wires the LSP connection to the
+ * moro language server entry point: wires the LSP connection to the
  * workspace index and the feature providers.
  */
 import { fileURLToPath } from 'node:url';

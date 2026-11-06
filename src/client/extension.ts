@@ -1,5 +1,5 @@
 /**
- * Moro: Common Lisp for Visual Studio Code.
+ * moro: Common Lisp for Visual Studio Code.
  */
 import * as path from 'node:path';
 import * as vscode from 'vscode';
@@ -24,9 +24,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const clientOptions: LanguageClientOptions = {
     documentSelector: [{ language: 'commonlisp' }],
     synchronize: { fileEvents: vscode.workspace.createFileSystemWatcher('**/*.{lisp,lsp,cl,asd,asdf,ros}') },
-    outputChannelName: 'Moro Language Server',
+    outputChannelName: 'moro language server',
   };
-  client = new LanguageClient('moro', 'Moro Language Server', serverOptions, clientOptions);
+  client = new LanguageClient('moro', 'moro language server', serverOptions, clientOptions);
   context.subscriptions.push({ dispose: () => void client?.stop() });
 
   const repl = new Repl();
@@ -39,7 +39,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const lispEditor = (): vscode.TextEditor | undefined => {
     const editor = vscode.window.activeTextEditor;
     if (!editor || editor.document.languageId !== 'commonlisp') {
-      void vscode.window.showInformationMessage('Moro: open a Common Lisp file first.');
+      void vscode.window.showInformationMessage('moro: open a Common Lisp file first.');
       return undefined;
     }
     return editor;
@@ -53,7 +53,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   const evalSelection = async (editor: vscode.TextEditor, selection: forms.FormSelection | null, what: string) => {
     if (!selection) {
-      void vscode.window.showInformationMessage(`Moro: no ${what} at the cursor.`);
+      void vscode.window.showInformationMessage(`moro: no ${what} at the cursor.`);
       return;
     }
     const text = editor.document.getText();
@@ -99,7 +99,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const editor = lispEditor();
     if (!editor) return;
     if (editor.document.uri.scheme !== 'file') {
-      void vscode.window.showInformationMessage('Moro: save the file to disk before loading it.');
+      void vscode.window.showInformationMessage('moro: save the file to disk before loading it.');
       return;
     }
     if (editor.document.isDirty) await editor.document.save();
@@ -153,7 +153,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const text = editor.document.getText();
     const form = forms.innermostFormAt(text, editor.document.offsetAt(editor.selection.active));
     if (!form) {
-      void vscode.window.showInformationMessage('Moro: no form at the cursor.');
+      void vscode.window.showInformationMessage('moro: no form at the cursor.');
       return;
     }
     flash(editor, form.start, form.end);
@@ -191,7 +191,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     if (!editor) return;
     const pkg = forms.packageAt(editor.document.getText(), editor.document.offsetAt(editor.selection.active));
     if (!pkg) {
-      void vscode.window.showInformationMessage('Moro: no (in-package ...) form precedes the cursor.');
+      void vscode.window.showInformationMessage('moro: no (in-package ...) form precedes the cursor.');
       return;
     }
     await repl.syncPackage(pkg, true);
