@@ -55,6 +55,7 @@ import { Definition, DefKind } from './analysis';
 import { activeParameter, parseLambdaList } from './lambda-list';
 import { allBindings, Binding, bindingsAt } from './scopes';
 import { StdSymbol, allStandard, hyperspecUrl, isCallable, kindLabel, lookupStandard, primaryDoc } from './symbols';
+import { typePositions } from './types';
 import { FoundDefinition, IndexedFile, WorkspaceIndex } from './workspace';
 
 export interface ServerContext {
@@ -62,7 +63,7 @@ export interface ServerContext {
   hyperspecBase: string;
 }
 
-export const SEMANTIC_TOKEN_TYPES = ['function', 'macro', 'parameter', 'variable'];
+export const SEMANTIC_TOKEN_TYPES = ['function', 'macro', 'parameter', 'variable', 'type'];
 export const SEMANTIC_TOKEN_MODIFIERS = ['declaration'];
 
 const LOOP_KEYWORDS = [
@@ -774,6 +775,8 @@ interface Token {
   length: number;
   type: number;
   modifiers: number;
+  /** Higher wins when two tokens start at the same offset. */
+  priority?: number;
 }
 
 export function semanticTokens(ctx: ServerContext, file: IndexedFile): SemanticTokens {
@@ -840,7 +843,14 @@ export function semanticTokens(ctx: ServerContext, file: IndexedFile): SemanticT
     }
   });
 
-  tokens.sort((a, b) => a.start - b.start || b.modifiers - a.modifiers);
+  // Symbols used as types: handler-case / typecase clauses, declarations, the,
+  // check-type, quoted type arguments, specializers, slot :type, loop of-type.
+  const typeIdx = typeIndex('type');
+  for (const position of typePositions(parse)) {
+    tokens.push({ start: position.start, length: position.end - position.start, type: typeIdx, modifiers: 0, priority: 1 });
+  }
+
+  tokens.sort((a, b) => a.start - b.start || (b.priority ?? 0) - (a.priority ?? 0) || b.modifiers - a.modifiers);
   const builder = new SemanticTokensBuilder();
   let lastEnd = -1;
   for (const token of tokens) {
