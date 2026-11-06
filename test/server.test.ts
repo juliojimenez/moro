@@ -115,12 +115,30 @@ const DEMO = `(defpackage #:demo
 (defun main ()
   (greet "world")
   (mapcar #'greet (list "a" "b")))
+
+(defun safe-main ()
+  (handler-case (main)
+    (error (e) (format t "~a" e))))
 `;
 
 let workspace: string;
 let proc: ChildProcess;
 let client: LspClient;
 let demoUri: string;
+let tokenTypes: string[] = [];
+
+/** Decodes LSP semantic token data into absolute (line, character, length, type). */
+function decodeTokens(data: number[]): Array<{ line: number; character: number; length: number; type: string }> {
+  const out: Array<{ line: number; character: number; length: number; type: string }> = [];
+  let line = 0;
+  let character = 0;
+  for (let i = 0; i < data.length; i += 5) {
+    line += data[i];
+    character = data[i] === 0 ? character + data[i + 1] : data[i + 1];
+    out.push({ line, character, length: data[i + 2], type: tokenTypes[data[i + 3]] });
+  }
+  return out;
+}
 
 before(async () => {
   assert.ok(fs.existsSync(SERVER), `bundle missing: ${SERVER}; run npm run build first`);
@@ -139,6 +157,7 @@ before(async () => {
   });
   assert.ok(init.capabilities.hoverProvider);
   assert.ok(init.capabilities.semanticTokensProvider);
+  tokenTypes = (init.capabilities.semanticTokensProvider as { legend: { tokenTypes: string[] } }).legend.tokenTypes;
   client.notify('initialized', {});
   client.notify('textDocument/didOpen', { textDocument: { uri: demoUri, languageId: 'commonlisp', version: 1, text: DEMO } });
   await new Promise((r) => setTimeout(r, 400)); // let the workspace scan finish
@@ -164,7 +183,7 @@ function position(needle: string, extra = 0) {
 
 test('document symbols', async () => {
   const symbols = await client.request<Array<{ name: string; kind: number; detail?: string }>>('textDocument/documentSymbol', { textDocument: { uri: demoUri } });
-  assert.deepEqual(symbols.map((s) => s.name), ['demo', 'greet', 'main']);
+  assert.deepEqual(symbols.map((s) => s.name), ['demo', 'greet', 'main', 'safe-main']);
   assert.equal(symbols[1].detail, '(name &optional (greeting "Hello"))');
 });
 
@@ -245,7 +264,14 @@ test('folding, selection ranges and semantic tokens', async () => {
   });
   assert.ok(selection[0].parent, 'selection expands outwards');
   const tokens = await client.request<{ data: number[] }>('textDocument/semanticTokens/full', { textDocument: { uri: demoUri } });
-  assert.ok(tokens.data.length >= 5 * 4, 'parameters, their uses and the greet calls are tokens');
+  const decoded = decodeTokens(tokens.data);
+  assert.ok(decoded.length >= 5, 'parameters, their uses and the greet calls are tokens');
+  const errorClause = position('(error (e)', 1);
+  const typeToken = decoded.find((t) => t.line === errorClause.line && t.character === errorClause.character);
+  assert.equal(typeToken?.type, 'type', 'the handler-case clause head is a type, not a function call');
+  assert.equal(typeToken?.length, 'error'.length);
+  const greetCall = position('(greet "world")', 1);
+  assert.equal(decoded.find((t) => t.line === greetCall.line && t.character === greetCall.character)?.type, 'function');
 });
 
 test('diagnostics for broken structure and formatting', async () => {

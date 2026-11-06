@@ -2,7 +2,7 @@
   "name": "moro",
   "displayName": "Moro",
   "description": "Common Lisp for Visual Studio Code: syntax highlighting, language server, REPL integration and structural editing.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "juliojimenez",
   "license": "Apache-2.0",
   "author": {
@@ -125,6 +125,9 @@
           ],
           "variable": [
             "variable.other.local.commonlisp"
+          ],
+          "type": [
+            "support.type.commonlisp"
           ]
         }
       }
