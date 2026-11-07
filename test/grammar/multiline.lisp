@@ -119,3 +119,24 @@
 (defun same-line (x) x)
 ;      ^^^^^^^^^ entity.name.function.commonlisp
 ;                 ^ - entity.name.function.commonlisp
+
+(
+ loop for x in xs
+;^^^^ keyword.control.commonlisp
+;     ^^^ keyword.control.loop.commonlisp
+;           ^^ keyword.control.loop.commonlisp
+      when (evenp x)
+;     ^^^^ keyword.control.loop.commonlisp
+;           ^^^^^ support.function.commonlisp
+        collect (list x (return x))
+;       ^^^^^^^ keyword.control.loop.commonlisp
+;                ^^^^ support.function.commonlisp
+;                ^^^^ - keyword.control.loop.commonlisp
+;                        ^^^^^^ keyword.control.commonlisp
+;                        ^^^^^^ - keyword.control.loop.commonlisp
+      finally (return x))
+;     ^^^^^^^ keyword.control.loop.commonlisp
+;                       ^ punctuation.section.parens.end.commonlisp
+(list 1
+      for)
+;     ^^^ - keyword.control.loop.commonlisp

@@ -232,7 +232,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   register('moro.repl.testSystem', () => systemCommand('test'));
 
   // Inspection
-  const expand = async (expander: string) => {
+  const expand = async (expander: 'macroexpand-1' | 'macroexpand') => {
     const editor = lispEditor();
     if (!editor) return;
     const text = editor.document.getText();
@@ -242,7 +242,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       return;
     }
     flash(editor, form.start, form.end);
-    await repl.syncPackage(forms.packageAt(text, form.start));
+    const pkg = forms.packageAt(text, form.start);
+    if (useImage()) {
+      await session.macroexpand(expander, form.text, pkg);
+      return;
+    }
+    await repl.syncPackage(pkg);
     await repl.send(`(pprint (${expander} (quote ${form.text})))`);
   };
   register('moro.repl.macroexpand1', () => expand('macroexpand-1'));
@@ -259,7 +264,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     if (!editor) return;
     const symbol = symbolAtCursor(editor) ?? (await vscode.window.showInputBox({ prompt: 'Symbol to describe' }));
     if (!symbol) return;
-    await repl.syncPackage(forms.packageAt(editor.document.getText(), editor.document.offsetAt(editor.selection.active)));
+    const pkg = forms.packageAt(editor.document.getText(), editor.document.offsetAt(editor.selection.active));
+    if (useImage()) {
+      await session.describe(symbol, pkg);
+      return;
+    }
+    await repl.syncPackage(pkg);
     await repl.send(`(describe '${symbol})`);
   });
 
@@ -268,6 +278,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const initial = editor && editor.document.languageId === 'commonlisp' ? symbolAtCursor(editor) ?? '' : '';
     const query = await vscode.window.showInputBox({ prompt: 'Apropos: substring of the symbol names to search for', value: initial });
     if (!query) return;
+    if (useImage()) {
+      await session.apropos(query, editor ? forms.packageAt(editor.document.getText(), editor.document.offsetAt(editor.selection.active)) : null);
+      return;
+    }
     await repl.send(`(apropos ${lispString(query)})`);
   });
 

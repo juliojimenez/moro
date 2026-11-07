@@ -288,6 +288,16 @@ const repository = {
       { include: '#definer-struct-name' },
     ],
   },
+  'deferred-loop': {
+    // "(" on an earlier line, then loop: this loop's clause keywords get their color.
+    begin: `${PACKAGE_PREFIX}((?i:loop))${NOT_AFTER}`,
+    beginCaptures: {
+      ...scopesFrom(0, PACKAGE_SCOPES),
+      3: { name: 'keyword.control.commonlisp' },
+    },
+    end: '(?=\\))',
+    patterns: [{ include: '#loop-keyword' }, { include: '$self' }],
+  },
   'head-wait': {
     // "(" ended its line: the first token of a later line is the head.
     begin: `(?<=\\()\\G${REST_OF_LINE_BLANK}`,
@@ -301,6 +311,7 @@ const repository = {
     applyEndPatternLast: 1,
     patterns: [
       ...WAIT_PATTERNS,
+      { include: '#deferred-loop' },
       ...DEFINER_KINDS.map(({ id }) => ({ include: `#deferred-definer-${id}` })),
       { include: '#deferred-definer-struct' },
     ],

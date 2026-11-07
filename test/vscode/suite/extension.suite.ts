@@ -144,5 +144,17 @@ test('the REPL started with the backend answers hovers from the live image (sbcl
     'the live image to answer a hover on sb-ext:posix-getenv',
   );
   assert.match(text, /live image/);
+
+  // Macroexpansion through the image opens the expansion beside the editor.
+  const source = await vscode.workspace.openTextDocument({ language: 'commonlisp', content: '(in-package #:cl-user)\n(when (foo) (bar) (baz))\n' });
+  const editor = await vscode.window.showTextDocument(source);
+  editor.selection = new vscode.Selection(new vscode.Position(1, 3), new vscode.Position(1, 3));
+  await vscode.commands.executeCommand('moro.repl.macroexpand1');
+  const expansion = await waitFor(
+    () => vscode.window.visibleTextEditors.find((e) => e.document !== source && e.document.languageId === 'commonlisp' && /\(IF \(FOO\)/.test(e.document.getText())),
+    15000,
+    'the macroexpansion document',
+  );
+  assert.match(expansion.document.getText(), /\(PROGN \(BAR\) \(BAZ\)\)/);
   await vscode.commands.executeCommand('moro.repl.stop');
 }, { skip: !hasSbcl });
