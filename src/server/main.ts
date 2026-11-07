@@ -19,6 +19,7 @@ import {
 import { TextDocument } from 'vscode-languageserver-textdocument';
 import { ParseResult, positionAt } from '../common/reader';
 import { IndentSettings, defaultSettings as defaultIndentSettings, indentationForLine, reindentLines, OffsetEdit } from './indent';
+import { LiveConnectionInfo, LiveImage } from './live';
 import * as providers from './providers';
 import { lookupStandard } from './symbols';
 import { IndexedFile, WorkspaceIndex, bodyArity } from './workspace';
@@ -82,8 +83,11 @@ let settings = defaultSettings();
 let workspaceFolders: string[] = [];
 let hasConfiguration = false;
 
+const live = new LiveImage();
+
 const ctx: providers.ServerContext = {
   index,
+  live,
   get hyperspecBase() {
     return settings.hover.hyperspecUrl;
   },
@@ -92,6 +96,15 @@ const ctx: providers.ServerContext = {
 function log(message: string): void {
   connection.console.log(`[moro] ${message}`);
 }
+
+live.log = log;
+live.onStatus = (status) => void connection.sendNotification('moro/liveStatus', status);
+
+/** The extension tells us where the REPL's backend listens (null when the REPL closed). */
+connection.onNotification('moro/liveImage', (params: LiveConnectionInfo | null) => {
+  if (params && typeof params.port === 'number' && typeof params.tokenPath === 'string') void live.connect(params);
+  else live.disconnect();
+});
 
 function folderPath(uri: string): string | null {
   if (!uri.startsWith('file:')) return null;
@@ -398,6 +411,7 @@ connection.onShutdown(() => {
   for (const timeout of pendingValidation.values()) clearTimeout(timeout);
   pendingValidation.clear();
   if (dependencyScanTimer) clearTimeout(dependencyScanTimer);
+  live.disconnect();
 });
 
 documents.listen(connection);

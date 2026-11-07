@@ -4,13 +4,16 @@
  */
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn, ChildProcess } from 'node:child_process';
+import { spawn, spawnSync, ChildProcess } from 'node:child_process';
+import * as net from 'node:net';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const SERVER = path.resolve(__dirname, '..', '..', 'dist', 'server.js');
+const BACKEND = path.resolve(__dirname, '..', '..', 'lisp', 'moro-backend.lisp');
+const hasSbcl = spawnSync('sbcl', ['--version'], { stdio: 'ignore' }).status === 0;
 
 interface Message {
   id?: number;
@@ -328,6 +331,58 @@ test('dependency systems: hover, definition and completion, but no rename', asyn
   const edit = await client.request<{ changes: Record<string, unknown[]> }>('textDocument/rename', { textDocument: { uri }, position: shout, newName: 'yell' });
   const changed = Object.keys(edit.changes);
   assert.deepEqual(changed, [uri], 'rename edits the workspace file only, never the library');
+});
+
+test('live image: hover, completion and signature help for what the REPL has loaded', { skip: !hasSbcl }, async () => {
+  const port = await new Promise<number>((resolve) => {
+    const server = net.createServer();
+    server.listen(0, '127.0.0.1', () => {
+      const p = (server.address() as net.AddressInfo).port;
+      server.close(() => resolve(p));
+    });
+  });
+  const tokenPath = path.join(workspace, 'token');
+  fs.writeFileSync(tokenPath, 'e2e-token', { mode: 0o600 });
+  const lisp = spawn(
+    'sbcl',
+    ['--noinform', '--non-interactive', '--load', BACKEND, '--eval', `(moro-backend:start ${port} "${tokenPath.split(path.sep).join('/')}")`, '--eval', '(progn (defun cl-user::only-in-image (x &optional y) "Only the image knows." (list x y)) (sleep 120))'],
+    { stdio: ['ignore', 'pipe', 'pipe'] },
+  );
+  try {
+    const status = client.waitFor('moro/liveStatus', (m) => (m.params as { connected: boolean }).connected);
+    client.notify('moro/liveImage', { port, tokenPath });
+    const connected = (await status).params as { implementation: string };
+    assert.equal(connected.implementation, 'SBCL');
+
+    const uri = pathToFileURL(path.join(workspace, 'live.lisp')).toString();
+    const text = '(in-package #:cl-user)\n(only-in-image 1 2)\n(sb-ext:posix-getenv "HOME")\n';
+    client.notify('textDocument/didOpen', { textDocument: { uri, languageId: 'commonlisp', version: 1, text } });
+    const hover = await client.request<{ contents: { value: string } }>('textDocument/hover', { textDocument: { uri }, position: { line: 1, character: 5 } });
+    assert.match(hover.contents.value, /\(only-in-image x &optional y\)/);
+    assert.match(hover.contents.value, /Only the image knows\./);
+    assert.match(hover.contents.value, /live image/);
+    const getenv = await client.request<{ contents: { value: string } }>('textDocument/hover', { textDocument: { uri }, position: { line: 2, character: 10 } });
+    assert.match(getenv.contents.value, /posix-getenv/);
+    const help = await client.request<{ signatures: Array<{ label: string }> }>('textDocument/signatureHelp', { textDocument: { uri }, position: { line: 1, character: 15 } });
+    assert.equal(help.signatures[0].label, '(only-in-image x &optional y)');
+    const completion = await client.request<{ items: Array<{ label: string; detail?: string }> }>('textDocument/completion', {
+      textDocument: { uri },
+      position: { line: 1, character: 8 },
+    });
+    const item = completion.items.find((i) => i.label === 'only-in-image');
+    assert.ok(item, 'the image-only function is offered');
+    assert.match(item!.detail ?? '', /live/);
+    const resolved = await client.request<{ documentation?: { value: string } }>('completionItem/resolve', item);
+    assert.match(resolved.documentation?.value ?? '', /Only the image knows/);
+    const definition = await client.request<Array<{ targetUri: string }>>('textDocument/definition', { textDocument: { uri }, position: { line: 2, character: 10 } });
+    assert.ok(Array.isArray(definition), 'definition answers (SBCL source may or may not be installed)');
+
+    const disconnected = client.waitFor('moro/liveStatus', (m) => !(m.params as { connected: boolean }).connected);
+    client.notify('moro/liveImage', null);
+    await disconnected;
+  } finally {
+    lisp.kill();
+  }
 });
 
 test('diagnostics for broken structure and formatting', async () => {

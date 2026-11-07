@@ -32,6 +32,8 @@ import {
   TextEdit,
   WorkspaceEdit,
 } from 'vscode-languageserver/node';
+import * as fs from 'node:fs';
+import { pathToFileURL } from 'node:url';
 import {
   AtomNode,
   ListNode,
@@ -40,17 +42,21 @@ import {
   enclosingList,
   headName,
   headSymbol,
+  inPackageAt,
   isConstituent,
   isInsideList,
   isList,
   isSymbol,
   lineOf,
   nodeAt,
+  parse as parseLisp,
   positionAt,
   symbolAt,
+  topLevelFormAt,
   walk,
   LAMBDA_LIST_KEYWORDS,
 } from '../common/reader';
+import { LiveCompletion, LiveDocumentation, LiveImage } from './live';
 import { Definition, DefKind } from './analysis';
 import { activeParameter, parseLambdaList } from './lambda-list';
 import { allBindings, Binding, bindingsAt } from './scopes';
@@ -60,7 +66,48 @@ import { FoundDefinition, IndexedFile, WorkspaceIndex } from './workspace';
 
 export interface ServerContext {
   index: WorkspaceIndex;
+  live: LiveImage;
   hyperspecBase: string;
+}
+
+/** Package to ask the live image about: the symbol's own prefix, else the file's in-package. */
+function livePackage(parse: ParseResult, offset: number, symbol: AtomNode | null): string {
+  return (symbol?.pkg && symbol.pkg !== 'KEYWORD' ? symbol.pkg : null) ?? inPackageAt(parse, offset) ?? 'COMMON-LISP-USER';
+}
+
+function liveDocumentationMarkdown(doc: LiveDocumentation): string {
+  const parts: string[] = [];
+  const callable = doc.kinds.some((k) => k === 'function' || k === 'generic-function' || k === 'macro' || k === 'special-operator');
+  if (callable) {
+    const arglist = doc.arglist ?? '()';
+    parts.push(`\`\`\`lisp\n(${doc.name}${arglist.length > 2 ? ` ${arglist.slice(1)}` : ')'}\n\`\`\``);
+  } else {
+    parts.push(`\`\`\`lisp\n${doc.name}\n\`\`\``);
+  }
+  const kinds = doc.kinds.length ? doc.kinds.map((k) => k.replace(/-/g, ' ')).join(', ') : 'symbol';
+  parts.push(`*${kinds}* in \`${doc.package.toLowerCase()}\` · live image`);
+  for (const entry of doc.docs) parts.push(docToMarkdown(entry.text));
+  return parts.join('\n\n');
+}
+
+function liveCompletionKind(kind: string): CompletionItemKind {
+  switch (kind) {
+    case 'function':
+      return CompletionItemKind.Function;
+    case 'generic-function':
+      return CompletionItemKind.Interface;
+    case 'macro':
+    case 'special-operator':
+      return CompletionItemKind.Keyword;
+    case 'variable':
+      return CompletionItemKind.Variable;
+    case 'constant':
+      return CompletionItemKind.Constant;
+    case 'class':
+      return CompletionItemKind.Class;
+    default:
+      return CompletionItemKind.Text;
+  }
 }
 
 export const SEMANTIC_TOKEN_TYPES = ['function', 'macro', 'parameter', 'variable', 'type', 'class', 'struct', 'namespace', 'property'];
@@ -239,7 +286,7 @@ export function diagnostics(file: IndexedFile): Diagnostic[] {
 // ---------------------------------------------------------------------------
 // Hover
 
-export function hover(ctx: ServerContext, file: IndexedFile, position: Position): Hover | null {
+export async function hover(ctx: ServerContext, file: IndexedFile, position: Position): Promise<Hover | null> {
   const parse = file.parse;
   const offset = offsetOf(parse, position);
   const symbol = symbolAt(parse, offset);
@@ -263,6 +310,10 @@ export function hover(ctx: ServerContext, file: IndexedFile, position: Position)
     const standard = lookupStandard(symbol.name);
     if (standard) sections.push(standardMarkdown(standard, ctx.hyperspecBase));
   }
+  if (!sections.length && ctx.live.connected) {
+    const doc = await ctx.live.documentation(symbol.name, livePackage(parse, offset, symbol));
+    if (doc) sections.push(liveDocumentationMarkdown(doc));
+  }
   if (!sections.length) return null;
   return { contents: markdown(sections.join('\n\n---\n\n')), range: rangeOf(parse, symbol.nameStart, symbol.end) };
 }
@@ -279,7 +330,7 @@ export function offsetOf(parse: ParseResult, position: Position): number {
 // Completion
 
 interface CompletionData {
-  source: 'std' | 'ws';
+  source: 'std' | 'ws' | 'live';
   name: string;
   pkg?: string | null;
 }
@@ -353,7 +404,7 @@ function matchCase(prefix: string, name: string): string {
   return name.toLowerCase();
 }
 
-export function completion(ctx: ServerContext, file: IndexedFile, position: Position): CompletionList {
+export async function completion(ctx: ServerContext, file: IndexedFile, position: Position): Promise<CompletionList> {
   const parse = file.parse;
   const text = parse.text;
   const offset = offsetOf(parse, position);
@@ -377,6 +428,22 @@ export function completion(ctx: ServerContext, file: IndexedFile, position: Posi
       data,
     });
   };
+  /** Symbols the live image knows that nothing static offered. */
+  const addLive = (candidates: LiveCompletion[], lead: string, typed: string) => {
+    const present = new Set(items.map((item) => item.label.toUpperCase()));
+    for (const candidate of candidates) {
+      const upper = candidate.name.toUpperCase();
+      if (present.has(upper)) continue;
+      present.add(upper);
+      const insert = candidate.name.includes('|') ? candidate.name : matchCase(typed, candidate.name);
+      push(candidate.name, `${lead}${insert}`, liveCompletionKind(candidate.kind), `1${upper}`, `${candidate.kind.replace(/-/g, ' ')} in ${candidate.package.toLowerCase()} (live)`, {
+        source: 'live',
+        name: upper,
+        pkg: candidate.package,
+      });
+    }
+  };
+  const packageHere = inPackageAt(parse, offset) ?? 'COMMON-LISP-USER';
 
   // Keywords: `:foo`
   if (prefix.startsWith(':')) {
@@ -433,6 +500,7 @@ export function completion(ctx: ServerContext, file: IndexedFile, position: Posi
         push(label, `${lead}${matchCase(rest, name)}`, found ? completionKind(found.def.kind) : CompletionItemKind.Value, `1${name}`, found?.def.lambdaList, { source: 'ws', name, pkg: pkgName });
       }
     }
+    if (ctx.live.connected) addLive(await ctx.live.complete(`${pkgText}${separator}${rest}`, packageHere), lead, rest);
     return CompletionList.create(items, false);
   }
 
@@ -471,15 +539,21 @@ export function completion(ctx: ServerContext, file: IndexedFile, position: Posi
     push(symbol.name, `${lead}${matchCase(bare, symbol.name)}`, standardCompletionKind(symbol), `2${symbol.name}`, symbol.arglist ?? symbol.kinds.map(kindLabel).join(', '), { source: 'std', name: symbol.name });
   }
 
+  // Whatever is loaded in the REPL image (two characters or more, to keep the request small).
+  if (ctx.live.connected && bare.length >= 2) addLive(await ctx.live.complete(bare, packageHere), lead, bare);
+
   return CompletionList.create(items, false);
 }
 
-export function resolveCompletion(ctx: ServerContext, item: CompletionItem): CompletionItem {
+export async function resolveCompletion(ctx: ServerContext, item: CompletionItem): Promise<CompletionItem> {
   const data = item.data as CompletionData | undefined;
   if (!data) return item;
   if (data.source === 'std') {
     const symbol = lookupStandard(data.name);
     if (symbol) item.documentation = markdown(standardMarkdown(symbol, ctx.hyperspecBase));
+  } else if (data.source === 'live') {
+    const doc = await ctx.live.documentation(data.name, data.pkg ?? null);
+    if (doc) item.documentation = markdown(liveDocumentationMarkdown(doc));
   } else {
     const found = ctx.index.findDefinitions(data.name, data.pkg ?? null)[0];
     if (found) item.documentation = markdown(definitionMarkdown(found));
@@ -512,7 +586,7 @@ function arglistsFor(ctx: ServerContext, head: AtomNode): ArglistSource[] {
   return out;
 }
 
-export function signatureHelp(ctx: ServerContext, file: IndexedFile, position: Position): SignatureHelp | null {
+export async function signatureHelp(ctx: ServerContext, file: IndexedFile, position: Position): Promise<SignatureHelp | null> {
   const parse = file.parse;
   const offset = offsetOf(parse, position);
   let list = enclosingList(parse, offset);
@@ -526,6 +600,15 @@ export function signatureHelp(ctx: ServerContext, file: IndexedFile, position: P
     }
     list = list.parent;
     hops++;
+  }
+  if (!sources.length && ctx.live.connected) {
+    // Nothing static: ask the image about the innermost operator.
+    list = enclosingList(parse, offset);
+    const head = list ? headSymbol(list) : null;
+    if (list && head && head.end <= offset) {
+      const doc = await ctx.live.documentation(head.name, livePackage(parse, offset, head));
+      if (doc?.arglist) sources = [{ head: head.text, arglist: doc.arglist, documentation: doc.docs[0]?.text }];
+    }
   }
   if (!list || !sources.length) return null;
 
@@ -559,7 +642,7 @@ function definitionLinks(found: FoundDefinition[], origin?: Range): LocationLink
   );
 }
 
-export function definition(ctx: ServerContext, file: IndexedFile, position: Position): LocationLink[] {
+export async function definition(ctx: ServerContext, file: IndexedFile, position: Position): Promise<LocationLink[]> {
   const parse = file.parse;
   const offset = offsetOf(parse, position);
   const symbol = symbolAt(parse, offset);
@@ -575,7 +658,32 @@ export function definition(ctx: ServerContext, file: IndexedFile, position: Posi
       return [LocationLink.create(file.uri, rangeOf(parse, local.node.start, local.node.end), rangeOf(parse, local.node.nameStart, local.node.end), origin)];
     }
   }
-  return definitionLinks(ctx.index.findDefinitions(symbol.name, symbol.pkg), origin);
+  const links = definitionLinks(ctx.index.findDefinitions(symbol.name, symbol.pkg), origin);
+  if (links.length || !ctx.live.connected) return links;
+  return liveDefinitionLinks(await ctx.live.definitions(symbol.name, livePackage(parse, offset, symbol)), origin);
+}
+
+/** Source locations reported by the image, mapped to ranges by reading the files. */
+async function liveDefinitionLinks(definitions: Awaited<ReturnType<LiveImage['definitions']>>, origin: Range): Promise<LocationLink[]> {
+  const links: LocationLink[] = [];
+  for (const def of definitions.slice(0, 8)) {
+    let text: string;
+    try {
+      text = await fs.promises.readFile(def.file, 'utf8');
+    } catch {
+      continue;
+    }
+    const result = parseLisp(text);
+    let form: Node | null = null;
+    if (def.offset !== undefined) form = topLevelFormAt(result, Math.min(def.offset, text.length));
+    else if (def.form !== undefined) form = result.forms[def.form] ?? null;
+    if (!form) continue;
+    const uri = pathToFileURL(def.file).toString();
+    const start = positionAt(result, form.start);
+    const selectionStart = def.offset !== undefined ? positionAt(result, Math.min(def.offset, text.length)) : start;
+    links.push(LocationLink.create(uri, Range.create(start, positionAt(result, form.end)), Range.create(selectionStart, selectionStart), origin));
+  }
+  return links;
 }
 
 export function references(ctx: ServerContext, file: IndexedFile, position: Position): Location[] {

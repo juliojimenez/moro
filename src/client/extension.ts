@@ -6,9 +6,15 @@ import * as vscode from 'vscode';
 import { LanguageClient, LanguageClientOptions, ServerOptions, TransportKind } from 'vscode-languageclient/node';
 import * as forms from './forms';
 import * as paredit from './paredit';
-import { Repl, lispPath, lispString } from './repl';
+import { LiveImageInfo, Repl, lispPath, lispString } from './repl';
 
 let client: LanguageClient | undefined;
+
+interface LiveStatus {
+  connected: boolean;
+  implementation?: string;
+  version?: string;
+}
 
 const evalHighlight = vscode.window.createTextEditorDecorationType({
   backgroundColor: new vscode.ThemeColor('editor.findMatchHighlightBackground'),
@@ -29,8 +35,27 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   client = new LanguageClient('moro', 'moro language server', serverOptions, clientOptions);
   context.subscriptions.push({ dispose: () => void client?.stop() });
 
-  const repl = new Repl();
+  const repl = new Repl(context.asAbsolutePath(path.join('lisp', 'moro-backend.lisp')));
   context.subscriptions.push(repl, evalHighlight);
+
+  // Status bar: which image the language server is talking to.
+  const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 50);
+  status.name = 'moro live image';
+  status.command = 'moro.repl.start';
+  const showStatus = (live: LiveStatus) => {
+    if (live.connected) {
+      status.text = `$(plug) moro: ${live.implementation ?? 'image'}${live.version ? ` ${live.version}` : ''}`;
+      status.tooltip = 'moro: completion, hover and signature help also come from this REPL image';
+    } else {
+      status.text = '$(debug-disconnect) moro: no image';
+      status.tooltip = 'moro: start a REPL to get completion and documentation for what is loaded';
+    }
+    status.show();
+  };
+  showStatus({ connected: false });
+  context.subscriptions.push(status);
+  const sendImage = (info: LiveImageInfo | null) => void client?.sendNotification('moro/liveImage', info);
+  repl.onImage = sendImage;
 
   const register = (command: string, callback: (...args: unknown[]) => unknown) => {
     context.subscriptions.push(vscode.commands.registerCommand(command, callback));
@@ -241,9 +266,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   register('moro.server.restart', async () => {
     await client?.restart();
+    sendImage(repl.image);
   });
 
   await client.start();
+  context.subscriptions.push(client.onNotification('moro/liveStatus', (live: LiveStatus) => showStatus(live)));
+  if (repl.image) sendImage(repl.image);
 }
 
 export async function deactivate(): Promise<void> {
