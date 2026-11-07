@@ -78,7 +78,7 @@ Each one is tracked as an issue; fix sketches are in the issue bodies.
 - The server has no live image: completion, hover and signature help know the standard library and what is written in the workspace, not what is loaded in your REPL ([#6](https://github.com/juliojimenez/moro/issues/6)). Macroexpansion, describe and apropos go through the REPL for that reason.
 - The REPL is a terminal: there is no inspector, no debugger UI and no return-value capture beyond what the implementation prints ([#7](https://github.com/juliojimenez/moro/issues/7)).
 - References and rename match symbol names across packages, and package nicknames are not resolved ([#8](https://github.com/juliojimenez/moro/issues/8)).
-- Highlighting: compound `#+` expressions and multi-line `|...|` symbols get plain scoping ([#3](https://github.com/juliojimenez/moro/issues/3)). Type positions and definition names are also colored by the language server, so they look right only while it is running; a `loop` whose `(` ends the previous line gets no LOOP keyword coloring.
+- Highlighting: type positions, definition names and superclass lists are colored by the language server, so they look right only while it is running; a `loop` whose `(` ends the previous line gets no LOOP keyword coloring.
 - LOOP indentation unwinds only one level of nested `when`/`if`/`unless`, and continuation keywords on their own line align under the previous clause's form rather than four columns in ([#4](https://github.com/juliojimenez/moro/issues/4)); a `#+feature` on its own line counts as an argument ([#5](https://github.com/juliojimenez/moro/issues/5)).
 - No tests run inside a real VS Code window yet ([#9](https://github.com/juliojimenez/moro/issues/9)).
 
