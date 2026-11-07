@@ -36,11 +36,11 @@ jobs:
       - name: Install
         run: npm ci
 
-      - name: Install SBCL (for the live backend tests)
+      - name: Install SBCL and ECL (for the live backend tests)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y sbcl
+          sudo apt-get install -y sbcl ecl
 
       - name: Type check
         run: npm run check

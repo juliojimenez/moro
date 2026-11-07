@@ -6,7 +6,7 @@
  */
 import * as fs from 'node:fs';
 import * as net from 'node:net';
-import { ListNode, Node, parse, isList, isSymbol, stringContent } from './reader';
+import { ListNode, Node, ParseResult, isList, isSymbol, parse, stringContent } from './reader';
 
 export interface LiveConnectionInfo {
   port: number;
@@ -36,9 +36,43 @@ export interface LiveCompletion {
 
 export interface LiveDefinition {
   file: string;
+  /** Character offset of the form (SBCL, CCL). */
   offset?: number;
+  /** A file position at or before the form, where the reader stood when about to read it (ECL, ABCL). */
+  after?: number;
+  /** Index of the top-level form in the file. */
   form?: number;
   type: string;
+}
+
+export interface LiveDefinitionTarget {
+  form: Node;
+  /** Offset to put the cursor at. */
+  selection: number;
+}
+
+/**
+ * The top-level form of a parsed file that a live definition points at.
+ * Implementations report where the reader stood when it was about to read
+ * the form: SBCL, ECL and ABCL give the position right after the previous
+ * top-level form (ABCL one whitespace character later), CCL the form's own
+ * start. So: the form containing the position, else the first form after it.
+ * `form` is an index into the file's top-level forms.
+ */
+export function locateLiveDefinition(result: ParseResult, def: LiveDefinition, textLength: number): LiveDefinitionTarget | null {
+  const position = def.offset ?? def.after;
+  if (position !== undefined) {
+    const at = Math.max(0, Math.min(position, textLength));
+    const inside = result.forms.find((f) => f.start <= at && at < f.end);
+    if (inside) return { form: inside, selection: at };
+    const next = result.forms.find((f) => f.start >= at);
+    return next ? { form: next, selection: next.formStart } : null;
+  }
+  if (def.form !== undefined) {
+    const form = result.forms[def.form] ?? null;
+    return form ? { form, selection: form.formStart } : null;
+  }
+  return null;
 }
 
 export interface LiveEvaluation {
@@ -425,16 +459,11 @@ export class LiveImage {
       const fields = plist(entry, 0);
       const file = stringOf(fields.get('file'));
       if (!file) return [];
-      const offset = fields.get('offset');
-      const form = fields.get('form');
-      return [
-        {
-          file,
-          offset: offset && offset.kind === 'number' ? Number(offset.text) : undefined,
-          form: form && form.kind === 'number' ? Number(form.text) : undefined,
-          type: nameOf(fields.get('type')) ?? 'function',
-        },
-      ];
+      const number = (key: string) => {
+        const node = fields.get(key);
+        return node && node.kind === 'number' ? Number(node.text) : undefined;
+      };
+      return [{ file, offset: number('offset'), after: number('after'), form: number('form'), type: nameOf(fields.get('type')) ?? 'function' }];
     });
   }
 
