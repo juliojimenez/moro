@@ -56,7 +56,7 @@ import {
   walk,
   LAMBDA_LIST_KEYWORDS,
 } from '../common/reader';
-import { LiveCompletion, LiveDocumentation, LiveImage } from './live';
+import { LiveCompletion, LiveDocumentation, LiveImage } from '../common/live';
 import { Definition, DefKind } from './analysis';
 import { activeParameter, parseLambdaList } from './lambda-list';
 import { allBindings, Binding, bindingsAt } from './scopes';

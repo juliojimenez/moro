@@ -19,7 +19,7 @@ import {
 import { TextDocument } from 'vscode-languageserver-textdocument';
 import { ParseResult, positionAt } from '../common/reader';
 import { IndentSettings, defaultSettings as defaultIndentSettings, indentationForLine, reindentLines, OffsetEdit } from './indent';
-import { LiveConnectionInfo, LiveImage } from './live';
+import { LiveConnectionInfo, LiveImage } from '../common/live';
 import * as providers from './providers';
 import { lookupStandard } from './symbols';
 import { IndexedFile, WorkspaceIndex, bodyArity } from './workspace';

@@ -4,9 +4,12 @@
 ;;;; (moro-backend:start port token-file) listens on 127.0.0.1:PORT in a
 ;;;; background thread. A client sends the contents of TOKEN-FILE as its first
 ;;;; line, then one request per line; every request gets one response form.
-;;;; Requests are read with *READ-EVAL* bound to NIL and never evaluated, so the
-;;;; only thing a client can do is ask about symbols: arglists, documentation,
-;;;; completions, packages and source locations of what is loaded right now.
+;;;; Introspection requests (:arglist :documentation :complete :packages
+;;;; :definition) are read with *READ-EVAL* bound to NIL and never evaluated.
+;;;; :eval and :inspect evaluate code the editor sends, as the REPL would, with
+;;;; output and return values captured and errors reported back instead of
+;;;; entering the debugger; :interrupt stops a running evaluation. Every
+;;;; connection runs in its own thread, so an evaluation never blocks completion.
 ;;;;
 ;;;; Supported: SBCL and ECL (sb-bsd-sockets), Clozure CL (ccl:make-socket),
 ;;;; ABCL (java.net). CLISP has no threads; START returns NIL there.
@@ -24,6 +27,9 @@
 (defvar *server* nil)
 (defvar *thread* nil)
 (defvar *token* nil)
+(defvar *eval-thread* nil "The thread running an :eval or :inspect request, while one does.")
+(defvar *inspector-stack* '() "Objects being inspected, innermost first, each as (object . parts).")
+(defconstant +inspector-limit+ 200 "Elements shown of a sequence or hash table.")
 
 ;;; ------------------------------------------------------------------ threads
 
@@ -33,6 +39,20 @@
   #+ccl (ccl:process-run-function name function)
   #+abcl (threads:make-thread function :name name)
   #-(or sbcl ecl ccl abcl) (progn name function nil))
+
+(defun current-thread ()
+  #+sbcl sb-thread:*current-thread*
+  #+ecl mp:*current-process*
+  #+ccl ccl:*current-process*
+  #+abcl (threads:current-thread)
+  #-(or sbcl ecl ccl abcl) nil)
+
+(defun interrupt-thread (thread function)
+  #+sbcl (sb-thread:interrupt-thread thread function)
+  #+ecl (mp:interrupt-process thread function)
+  #+ccl (ccl:process-interrupt thread function)
+  #+abcl (threads:interrupt-thread thread function)
+  #-(or sbcl ecl ccl abcl) (progn thread function nil))
 
 ;;; ------------------------------------------------------------------ sockets
 
@@ -212,6 +232,198 @@
                    (progn (when space (write-char #\Space out) (setf space nil))
                           (write-char ch out)))))))
 
+;;; ------------------------------------------------------------------ evaluation
+
+(defun safe-prin1 (object &optional (package (find-package :cl-user)))
+  "OBJECT printed for the editor: bounded, circular-safe, never signalling."
+  (handler-case
+      (let ((*print-length* 100) (*print-level* 10) (*print-circle* t) (*print-readably* nil)
+            (*print-pretty* t) (*print-right-margin* 100) (*package* package))
+        (prin1-to-string object))
+    (error () "#<unprintable>")))
+
+(defparameter *backtrace-noise*
+  '("MORO-BACKEND::" "SB-KERNEL::%SIGNAL" "SB-DEBUG::RUN-HOOK" "INVOKE-DEBUGGER" "(ERROR " "(BREAK " "(WARN "
+    "SB-KERNEL::INTERNAL-ERROR" "SB-KERNEL:INTERNAL-ERROR" "SB-INT:SIMPLE-EVAL-IN-LEXENV" "SB-EVAL::" "(EVAL ")
+  "Frame prefixes of the signalling machinery and of the backend itself, dropped from both ends of a backtrace.")
+
+(defun noise-frame-p (frame)
+  (some (lambda (noise) (search noise frame)) *backtrace-noise*))
+
+(defun trim-backtrace (frames)
+  "FRAMES without the signalling frames on top and the backend's own frames at the bottom."
+  (let* ((start (position-if-not #'noise-frame-p frames))
+         ;; The handler's own frame is named "... :IN EVALUATE-TEXT", so look past the start.
+         (end (and start (position-if (lambda (frame) (search "MORO-BACKEND::EVALUATE-TEXT" frame)) frames :start start))))
+    (if start
+        (subseq frames start (or end (length frames)))
+        '())))
+
+(defun capture-backtrace ()
+  "A few frames of the current backtrace as strings, where the implementation offers them."
+  (handler-case
+      (trim-backtrace
+       (mapcar (lambda (frame) (one-line (safe-prin1 frame)))
+               #+sbcl (sb-debug:list-backtrace :count 40)
+               #+ccl (let ((frames (ccl:backtrace-as-list))) (subseq frames 0 (min 40 (length frames))))
+               #-(or sbcl ccl) nil))
+    (error () nil)))
+
+(defun evaluate-text (text package-name)
+  "Evaluate every form of TEXT in PACKAGE-NAME, as a REPL would but with the
+   streams captured. Returns (:ok :values (...) :output \"...\" :package \"...\")
+   or (:error message :output \"...\" :backtrace (...)). Errors, BREAK and
+   interrupts never reach a debugger: this thread has nobody to talk to."
+  (let* ((package (or (find-package* package-name) (find-package :cl-user)))
+         (output (make-string-output-stream))
+         (values '())
+         (message nil)
+         (backtrace nil))
+    (flet ((abort-with (condition)
+             (setf message (one-line (handler-case (princ-to-string condition) (error () "error")))
+                   backtrace (capture-backtrace))
+             (throw 'moro-eval-abort nil)))
+      (setf *eval-thread* (current-thread))
+      (unwind-protect
+           (catch 'moro-eval-abort
+             (let ((*package* package)
+                   (*standard-output* output) (*error-output* output) (*trace-output* output)
+                   (*standard-input* (make-string-input-stream ""))
+                   (*debugger-hook* (lambda (condition hook) (declare (ignore hook)) (abort-with condition)))
+                   #+sbcl (sb-ext:*invoke-debugger-hook* (lambda (condition hook) (declare (ignore hook)) (abort-with condition))))
+               (handler-bind ((error #'abort-with)
+                              (warning (lambda (condition)
+                                         (format output "~&;; ~A~%" (one-line (princ-to-string condition)))
+                                         (muffle-warning condition))))
+                 (with-input-from-string (in text)
+                   (loop for form = (read in nil in)
+                         until (eq form in)
+                         do (setf values (multiple-value-list (eval form))))))))
+        (setf *eval-thread* nil)))
+    (if message
+        (list :error message :output (get-output-stream-string output) :backtrace backtrace)
+        (list :ok :values (mapcar (lambda (value) (safe-prin1 value package)) values)
+                  :output (get-output-stream-string output)
+                  :package (package-name package)))))
+
+(defun interrupt-evaluation ()
+  (let ((thread *eval-thread*))
+    (when thread
+      (interrupt-thread thread (lambda () (error "Interrupted from the editor")))
+      t)))
+
+;;; ------------------------------------------------------------------ inspector
+
+(defun arglist-of (function)
+  (handler-case
+      #+sbcl (sb-introspect:function-lambda-list function)
+      #+ccl (ccl:arglist function)
+      #+ecl (ext:function-lambda-list function)
+      #+abcl (values (ext:arglist function))
+      #-(or sbcl ccl ecl abcl) (progn function :unknown)
+    (error () :unknown)))
+
+(defun slot-parts (object)
+  (let ((class (class-of object)))
+    (loop for slot in #+sbcl (sb-mop:class-slots class) #+ccl (ccl:class-slots class)
+                      #+ecl (clos:class-slots class) #+abcl (mop:class-slots class)
+                      #-(or sbcl ccl ecl abcl) nil
+          for name = #+sbcl (sb-mop:slot-definition-name slot) #+ccl (ccl:slot-definition-name slot)
+                     #+ecl (clos:slot-definition-name slot) #+abcl (mop:slot-definition-name slot)
+                     #-(or sbcl ccl ecl abcl) nil
+          when name
+            collect (cons (string-downcase (symbol-name name))
+                          (if (slot-boundp object name) (slot-value object name) :%unbound)))))
+
+(defun inspector-parts (object)
+  "The parts of OBJECT as (label . value) pairs, in the order shown."
+  (handler-case
+      ;; Hash tables, packages and pathnames are structure-objects on some
+      ;; implementations: their clauses must come before the generic one.
+      (typecase object
+        (string nil)
+        (cons (if (ignore-errors (list-length object))
+                  (loop for element in object for i from 0 below +inspector-limit+ collect (cons (format nil "~D" i) element))
+                  (list (cons "car" (car object)) (cons "cdr" (cdr object)))))
+        (vector (loop for element across object for i from 0 below +inspector-limit+ collect (cons (format nil "~D" i) element)))
+        (array (list (cons "dimensions" (array-dimensions object)) (cons "element type" (array-element-type object))))
+        (hash-table (let ((parts '()) (count 0))
+                      (maphash (lambda (key value)
+                                 (when (< count +inspector-limit+) (push (cons (safe-prin1 key) value) parts) (incf count)))
+                               object)
+                      (append (list (cons "count" (hash-table-count object)) (cons "test" (hash-table-test object))) (nreverse parts))))
+        (symbol (list (cons "name" (symbol-name object))
+                      (cons "package" (symbol-package object))
+                      (cons "value" (if (boundp object) (symbol-value object) :%unbound))
+                      (cons "function" (if (fboundp object) (fdefinition object) :%unbound))
+                      (cons "plist" (symbol-plist object))))
+        (package (list (cons "name" (package-name object)) (cons "nicknames" (package-nicknames object))
+                       (cons "uses" (package-use-list object)) (cons "used by" (package-used-by-list object))))
+        (function (let ((lambda-list (arglist-of object)))
+                    (append (list (cons "lambda list" (if (eq lambda-list :unknown) "unknown" lambda-list)))
+                            (list (cons "documentation" (or (ignore-errors (documentation object t)) ""))))))
+        (pathname (list (cons "namestring" (namestring object)) (cons "directory" (pathname-directory object))
+                        (cons "name" (pathname-name object)) (cons "type" (pathname-type object))))
+        ((or standard-object structure-object condition) (slot-parts object))
+        (t nil))
+    (error () nil)))
+
+(defun inspector-view ()
+  (let ((entry (first *inspector-stack*)))
+    (if (null entry)
+        (list :none)
+        (let ((object (car entry)) (parts (cdr entry)))
+          (list :ok
+                :title (safe-prin1 object)
+                :type (safe-prin1 (type-of object))
+                :depth (length *inspector-stack*)
+                :parts (loop for (label . value) in parts
+                             for index from 0
+                             collect (list index label
+                                           (if (eq value :%unbound) "#<unbound>" (safe-prin1 value))
+                                           (and (not (eq value :%unbound)) (not (null (inspector-parts value))) t))))))))
+
+(defun inspect-object (object)
+  (push (cons object (inspector-parts object)) *inspector-stack*)
+  (inspector-view))
+
+(defun inspect-text (text package-name)
+  "Evaluate TEXT like :eval and inspect its primary value."
+  (let* ((package (or (find-package* package-name) (find-package :cl-user)))
+         (result nil) (message nil))
+    (flet ((abort-with (condition)
+             (setf message (one-line (handler-case (princ-to-string condition) (error () "error"))))
+             (throw 'moro-inspect-abort nil)))
+      (setf *eval-thread* (current-thread))
+      (unwind-protect
+           (catch 'moro-inspect-abort
+             (let ((*package* package)
+                   (*standard-output* (make-broadcast-stream)) (*error-output* (make-broadcast-stream))
+                   (*standard-input* (make-string-input-stream ""))
+                   (*debugger-hook* (lambda (condition hook) (declare (ignore hook)) (abort-with condition)))
+                   #+sbcl (sb-ext:*invoke-debugger-hook* (lambda (condition hook) (declare (ignore hook)) (abort-with condition))))
+               (handler-bind ((error #'abort-with)
+                              (warning #'muffle-warning))
+                 (with-input-from-string (in text)
+                   (loop for form = (read in nil in)
+                         until (eq form in)
+                         do (setf result (eval form)))))))
+        (setf *eval-thread* nil)))
+    (if message
+        (list :error message)
+        (progn (setf *inspector-stack* '()) (inspect-object result)))))
+
+(defun inspect-part (index)
+  (let* ((entry (first *inspector-stack*))
+         (part (and entry (integerp index) (nth index (cdr entry)))))
+    (cond ((null part) (list :error (format nil "no part ~A" index)))
+          ((eq (cdr part) :%unbound) (list :error "the slot is unbound"))
+          (t (inspect-object (cdr part))))))
+
+(defun inspect-pop ()
+  (pop *inspector-stack*)
+  (inspector-view))
+
 ;;; ------------------------------------------------------------------ protocol
 
 (defun dispatch (request)
@@ -250,6 +462,12 @@
              (list :none)
              (let ((sources (definition-sources symbol)))
                (if sources (list :ok sources) (list :none))))))
+      (:eval (evaluate-text (string (second request)) (third request)))
+      (:interrupt (list :ok (if (interrupt-evaluation) t nil)))
+      (:inspect (inspect-text (string (second request)) (third request)))
+      (:inspect-part (inspect-part (second request)))
+      (:inspect-pop (inspect-pop))
+      (:inspect-view (inspector-view))
       (t (list :error (format nil "unknown request ~S" op))))))
 
 (defun read-request (line)
@@ -270,10 +488,11 @@
     (ignore-errors (close stream))))
 
 (defun accept-loop (server)
+  "Each client gets its own thread, so an evaluation never delays completion."
   (loop
     (let ((stream (handler-case (accept-client server) (error () (return)))))
       (when stream
-        (handler-case (serve stream) (error () nil))))))
+        (spawn "moro client" (lambda () (handler-case (serve stream) (error () nil))))))))
 
 (defun read-token (file)
   (with-open-file (in file :external-format :utf-8)

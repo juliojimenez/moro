@@ -6,7 +6,7 @@
  */
 import * as fs from 'node:fs';
 import * as net from 'node:net';
-import { ListNode, Node, parse, isList, isSymbol, stringContent } from '../common/reader';
+import { ListNode, Node, parse, isList, isSymbol, stringContent } from './reader';
 
 export interface LiveConnectionInfo {
   port: number;
@@ -40,6 +40,35 @@ export interface LiveDefinition {
   form?: number;
   type: string;
 }
+
+export interface LiveEvaluation {
+  ok: boolean;
+  /** Printed return values (empty for zero values). */
+  values: string[];
+  /** Everything the forms printed to the standard streams. */
+  output: string;
+  /** Error message when `ok` is false. */
+  error?: string;
+  backtrace: string[];
+  package?: string;
+}
+
+export interface InspectorPart {
+  index: number;
+  label: string;
+  value: string;
+  /** True when the part has parts of its own (can be drilled into). */
+  expandable: boolean;
+}
+
+export interface InspectorView {
+  title: string;
+  type: string;
+  depth: number;
+  parts: InspectorPart[];
+}
+
+export type InspectorResult = { view: InspectorView } | { error: string } | null;
 
 interface Pending {
   line: string;
@@ -218,19 +247,21 @@ export class LiveImage {
     const next = this.queue.shift();
     if (!next) return;
     this.inFlight = next;
-    next.timer = setTimeout(() => {
-      if (this.inFlight === next) {
-        this.log(`live image: timeout waiting for ${next.line}`);
-        this.inFlight = null;
-        next.resolve(null);
-        // The backend answers in order; a lost answer would misalign later ones.
-        this.disconnect();
-      }
-    }, next.timeoutMs);
+    if (next.timeoutMs > 0) {
+      next.timer = setTimeout(() => {
+        if (this.inFlight === next) {
+          this.log(`live image: timeout waiting for ${next.line}`);
+          this.inFlight = null;
+          next.resolve(null);
+          // The backend answers in order; a lost answer would misalign later ones.
+          this.disconnect();
+        }
+      }, next.timeoutMs);
+    }
     this.socket.write(`${next.line}\n`);
   }
 
-  /** Sends one request form; resolves with the response form, or null when disconnected or timed out. */
+  /** Sends one request form; resolves with the response form, or null when disconnected or timed out (0 = no timeout). */
   request(line: string, timeoutMs = 1500): Promise<Node | null> {
     if (!this.socket) return Promise.resolve(null);
     if (this.queue.length >= MAX_QUEUE) {
@@ -315,4 +346,90 @@ export class LiveImage {
     const list = isOk(response) ? response.children[1] : undefined;
     return isList(list) ? list.children.map((n) => stringOf(n)).filter((s): s is string => !!s) : [];
   }
+
+  /** Evaluates `text` in `pkg` inside the image; no timeout, use `interrupt` from another connection. */
+  async evaluate(text: string, pkg: string | null): Promise<LiveEvaluation | null> {
+    if (!this.connected) return null;
+    const response = await this.request(`(:eval ${lispString(text)} ${pkg ? lispString(pkg) : 'nil'})`, 0);
+    return decodeEvaluation(response);
+  }
+
+  /** Interrupts the evaluation running in the image, if any. */
+  async interrupt(): Promise<boolean> {
+    if (!this.connected) return false;
+    const response = await this.request('(:interrupt)', 3000);
+    return isOk(response) && nameOf(response.children[1]) === 't';
+  }
+
+  async inspect(text: string, pkg: string | null): Promise<InspectorResult> {
+    if (!this.connected) return null;
+    return decodeInspector(await this.request(`(:inspect ${lispString(text)} ${pkg ? lispString(pkg) : 'nil'})`, 0));
+  }
+
+  async inspectPart(index: number): Promise<InspectorResult> {
+    if (!this.connected) return null;
+    return decodeInspector(await this.request(`(:inspect-part ${Math.floor(index)})`, 5000));
+  }
+
+  async inspectPop(): Promise<InspectorResult> {
+    if (!this.connected) return null;
+    return decodeInspector(await this.request('(:inspect-pop)', 5000));
+  }
+}
+
+function strings(node: Node | undefined): string[] {
+  return isList(node) ? node.children.map((n) => stringOf(n)).filter((s): s is string => s !== null) : [];
+}
+
+/** Decodes an :eval response; null when the connection failed. */
+export function decodeEvaluation(response: Node | null): LiveEvaluation | null {
+  if (!response || !isList(response)) return null;
+  const tag = nameOf(response.children[0]);
+  if (tag === 'ok') {
+    const fields = plist(response);
+    return { ok: true, values: strings(fields.get('values')), output: stringOf(fields.get('output')) ?? '', backtrace: [], package: stringOf(fields.get('package')) ?? undefined };
+  }
+  if (tag === 'error') {
+    const fields = plist(response, 2);
+    return {
+      ok: false,
+      values: [],
+      output: stringOf(fields.get('output')) ?? '',
+      error: stringOf(response.children[1]) ?? 'error',
+      backtrace: strings(fields.get('backtrace')),
+    };
+  }
+  return null;
+}
+
+/** Decodes an inspector response (:ok view | :error message | :none). */
+export function decodeInspector(response: Node | null): InspectorResult {
+  if (!response || !isList(response)) return null;
+  const tag = nameOf(response.children[0]);
+  if (tag === 'error') return { error: stringOf(response.children[1]) ?? 'error' };
+  if (tag !== 'ok') return null;
+  const fields = plist(response);
+  const parts = fields.get('parts');
+  const depth = fields.get('depth');
+  return {
+    view: {
+      title: stringOf(fields.get('title')) ?? '',
+      type: stringOf(fields.get('type')) ?? '',
+      depth: depth && depth.kind === 'number' ? Number(depth.text) : 1,
+      parts: isList(parts)
+        ? parts.children.flatMap((entry) => {
+            if (!isList(entry)) return [];
+            const [index, label, value, expandable] = entry.children;
+            return [
+              {
+                index: index && index.kind === 'number' ? Number(index.text) : 0,
+                label: stringOf(label) ?? '',
+                value: stringOf(value) ?? '',
+                expandable: nameOf(expandable) === 't',
+              },
+            ];
+          })
+        : [],
+    },
+  };
 }

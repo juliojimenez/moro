@@ -210,6 +210,24 @@
           "default": true,
           "markdownDescription": "Start the REPL with moro's backend loaded (`lisp/moro-backend.lisp`), so completion, hover, signature help and go to definition also know what the image has loaded. The backend listens on a loopback port, requires a token readable only by you, reads requests with `*read-eval*` bound to nil and never evaluates them. Needs threads: SBCL, ECL, Clozure CL, ABCL or Roswell."
         },
+        "moro.repl.evaluateIn": {
+          "type": "string",
+          "enum": [
+            "image",
+            "terminal"
+          ],
+          "enumDescriptions": [
+            "Evaluate through the backend when it is connected: results appear inline and in the moro results channel, errors are reported without a debugger, and Interrupt Evaluation works reliably. Falls back to the terminal when no backend is connected.",
+            "Always send forms to the REPL terminal."
+          ],
+          "default": "image",
+          "description": "Where Evaluate Top-Level Form, Evaluate Selection and Evaluate Buffer run."
+        },
+        "moro.repl.inlineResults": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show the result of an evaluation after the form in the editor (cleared when the document changes)."
+        },
         "moro.indentation.specs": {
           "type": "object",
           "additionalProperties": {
@@ -353,6 +371,16 @@
         "category": "moro"
       },
       {
+        "command": "moro.repl.inspect",
+        "title": "Inspect Form",
+        "category": "moro"
+      },
+      {
+        "command": "moro.repl.clearResults",
+        "title": "Clear Inline Results",
+        "category": "moro"
+      },
+      {
         "command": "moro.repl.syncPackage",
         "title": "Switch REPL to File's Package",
         "category": "moro"
@@ -438,6 +466,10 @@
           "group": "2_inspect@2"
         },
         {
+          "command": "moro.repl.inspect",
+          "group": "2_inspect@3"
+        },
+        {
           "command": "moro.repl.start",
           "group": "3_repl@1"
         },
@@ -510,6 +542,10 @@
         {
           "command": "moro.edit.selectTopLevelForm",
           "when": "editorLangId == commonlisp"
+        },
+        {
+          "command": "moro.repl.inspect",
+          "when": "editorLangId == commonlisp"
         }
       ]
     },
@@ -577,6 +613,11 @@
       {
         "command": "moro.edit.wrapParens",
         "key": "ctrl+alt+w",
+        "when": "editorTextFocus && editorLangId == commonlisp"
+      },
+      {
+        "command": "moro.repl.inspect",
+        "key": "ctrl+alt+n",
         "when": "editorTextFocus && editorLangId == commonlisp"
       }
     ]
