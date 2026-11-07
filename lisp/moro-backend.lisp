@@ -109,6 +109,18 @@
         ((consp x) (cons (strip-packages (car x)) (strip-packages (cdr x))))
         (t x)))
 
+(defun plain-keys (lambda-list)
+  "LAMBDA-LIST with its keyword parameters written as plain names: CCL reports (a &key :b)."
+  (if (and (listp lambda-list) (null (cdr (last lambda-list))))
+      (let ((keys nil))
+        (mapcar (lambda (item)
+                  (cond ((member item lambda-list-keywords) (setf keys (eq item '&key)) item)
+                        ((and keys (keywordp item)) (make-symbol (symbol-name item)))
+                        ((and keys (consp item) (keywordp (first item))) (cons (make-symbol (symbol-name (first item))) (rest item)))
+                        (t item)))
+                lambda-list))
+      lambda-list))
+
 (defun render (object)
   (let ((*print-case* :downcase) (*print-gensym* nil) (*print-pretty* nil) (*print-readably* nil)
         (*print-length* nil) (*print-level* nil) (*print-circle* nil)
@@ -143,7 +155,7 @@
   (handler-case
       (cond ((macro-function symbol)
              #+sbcl (sb-introspect:function-lambda-list (macro-function symbol))
-             #+ccl (ccl:arglist (macro-function symbol))
+             #+ccl (plain-keys (ccl:arglist (macro-function symbol)))
              #+ecl (ext:function-lambda-list (macro-function symbol))
              #+abcl (values (ext:arglist (macro-function symbol)))
              #-(or sbcl ccl ecl abcl) :unknown)
@@ -152,7 +164,7 @@
              #-sbcl :unknown)
             ((fboundp symbol)
              #+sbcl (sb-introspect:function-lambda-list symbol)
-             #+ccl (ccl:arglist symbol)
+             #+ccl (plain-keys (ccl:arglist symbol))
              #+ecl (ext:function-lambda-list symbol)
              #+abcl (values (ext:arglist symbol))
              #-(or sbcl ccl ecl abcl) :unknown)
@@ -214,22 +226,85 @@
                         (or (first (kinds symbol)) :symbol)
                         (let ((package (symbol-package symbol))) (if package (package-name package) ""))))))
 
+(defparameter *definer-types*
+  '((:function "DEFUN" "FUNCTION") (:macro "DEFMACRO" "MACRO") (:variable "DEFVAR" "DEFPARAMETER" "VARIABLE")
+    (:constant "DEFCONSTANT" "CONSTANT") (:class "DEFCLASS" "CLASS") (:generic-function "DEFGENERIC" "GENERIC-FUNCTION")
+    (:method "DEFMETHOD" "METHOD") (:structure "DEFSTRUCT" "STRUCTURE") (:type "DEFTYPE" "TYPE")
+    (:condition "DEFINE-CONDITION" "CONDITION") (:setf-expander "DEFSETF" "DEFINE-SETF-EXPANDER" "SETF-EXPANDER")
+    (:compiler-macro "DEFINE-COMPILER-MACRO" "COMPILER-MACRO"))
+  "Definition :type keywords and the names implementations use for them.")
+
+(defun definer-type (designator)
+  "The :type keyword for what an implementation calls a definition: a definer
+   symbol (DEFUN), a kind symbol (FUNCTION, :METHOD) or a list headed by one."
+  (let ((name (handler-case (string (if (consp designator) (first designator) designator)) (error () ""))))
+    (or (first (find-if (lambda (entry) (member name (rest entry) :test #'string=)) *definer-types*))
+        :function)))
+
+(defun source-file (designator)
+  "DESIGNATOR as a namestring when it names a file, else NIL."
+  (and (or (pathnamep designator) (stringp designator))
+       (handler-case (namestring (translate-logical-pathname designator)) (error () (namestring designator)))))
+
 (defun definition-sources (symbol)
-  "Source locations as (:file path :offset n) or (:file path :form n) lists; SBCL only."
+  "Source locations of SYMBOL's definitions, each a plist with :file, :type and
+   one of :offset (the character offset of the form; SBCL, CCL), :after (a
+   file position at or before the form, where the reader stood when it was
+   about to read it; ECL, ABCL) or :form (the index of the top-level form)."
   #+sbcl
   (let ((out '()))
     (dolist (type '(:function :macro :generic-function :method :variable :constant :class :condition :structure :type :setf-expander :compiler-macro))
       (dolist (source (handler-case (sb-introspect:find-definition-sources-by-name symbol type) (error () nil)))
-        (let ((pathname (sb-introspect:definition-source-pathname source)))
-          (when pathname
-            (let* ((physical (handler-case (translate-logical-pathname pathname) (error () pathname)))
-                   (file (namestring physical))
-                   (offset (sb-introspect:definition-source-character-offset source))
-                   (path (sb-introspect:definition-source-form-path source)))
+        (let ((file (source-file (sb-introspect:definition-source-pathname source))))
+          (when file
+            (let ((offset (sb-introspect:definition-source-character-offset source))
+                  (path (sb-introspect:definition-source-form-path source)))
               (pushnew (list :file file (if offset :offset :form) (or offset (first path) 0) :type type)
                        out :test #'equal))))))
     (nreverse out))
-  #-sbcl (progn symbol nil))
+  #+ccl
+  ;; ((definition-type . name) . source-notes); a source note knows its file and the form's start.
+  (let ((out '()))
+    (dolist (entry (handler-case (ccl:find-definition-sources symbol) (error () nil)))
+      (let* ((type (handler-case (definer-type (ccl:definition-type-name (first (first entry)))) (error () :function)))
+             (type (if (and (eq type :function) (macro-function symbol)) :macro type)))
+        (dolist (note (rest entry))
+          (let ((file (and (ccl:source-note-p note) (source-file (ccl:source-note-filename note)))))
+            (when file
+              (pushnew (list :file file :offset (or (ccl:source-note-start-pos note) 0) :type type)
+                       out :test #'equal))))))
+    (nreverse out))
+  #+ecl
+  ;; ((DEFUN NAME) #P"file" . position): the position is where the reader stood
+  ;; before reading the form, right after the previous top-level form.
+  (let ((out '()))
+    (dolist (entry (handler-case (ext:get-annotation symbol 'si::location :all) (error () nil)))
+      (when (and (consp entry) (consp (rest entry)))
+        (let ((file (source-file (second entry)))
+              (position (cddr entry)))
+          (when file
+            (pushnew (list :file file :after (if (integerp position) position 0) :type (definer-type (first entry)))
+                     out :test #'equal)))))
+    (nreverse out))
+  #+abcl
+  ;; ((:FUNCTION NAME) "file" position) or (:MACRO "file" position) on the SYS::SOURCE
+  ;; property; the position is right after the previous top-level form and the
+  ;; whitespace character that ended it. Older ABCLs keep (file . position) in SYS::%SOURCE.
+  (let ((out '()))
+    (dolist (entry (handler-case (get symbol 'sys::source) (error () nil)))
+      (when (and (consp entry) (consp (rest entry)) (consp (cddr entry)))
+        (let ((file (source-file (second entry)))
+              (position (third entry)))
+          (when file
+            (pushnew (list :file file :after (if (integerp position) position 0) :type (definer-type (first entry)))
+                     out :test #'equal)))))
+    (unless out
+      (let* ((source (handler-case (get symbol 'sys::%source) (error () nil)))
+             (file (and (consp source) (source-file (car source)))))
+        (when file
+          (push (list :file file :after (if (integerp (cdr source)) (cdr source) 0) :type :function) out))))
+    (nreverse out))
+  #-(or sbcl ccl ecl abcl) (progn symbol nil))
 
 (defun one-line (text)
   "TEXT with line breaks collapsed, for error messages."
@@ -295,7 +370,7 @@
 (defun arglist-of (function)
   (handler-case
       #+sbcl (sb-introspect:function-lambda-list function)
-      #+ccl (ccl:arglist function)
+      #+ccl (plain-keys (ccl:arglist function))
       #+ecl (ext:function-lambda-list function)
       #+abcl (values (ext:arglist function))
       #-(or sbcl ccl ecl abcl) (progn function :unknown)
@@ -591,7 +666,7 @@
       (:connect
        (list :ok :implementation (lisp-implementation-type) :version (lisp-implementation-version)
              :package (package-name *package*)
-             :features (list #+sbcl :definitions #+(or sbcl ccl ecl abcl) :arglists)))
+             :features (list #+(or sbcl ccl ecl abcl) :definitions #+(or sbcl ccl ecl abcl) :arglists)))
       (:packages
        (list :ok (sort (loop for package in (list-all-packages)
                              append (cons (package-name package) (copy-list (package-nicknames package))))

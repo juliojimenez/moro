@@ -52,11 +52,10 @@ import {
   parse as parseLisp,
   positionAt,
   symbolAt,
-  topLevelFormAt,
   walk,
   LAMBDA_LIST_KEYWORDS,
 } from '../common/reader';
-import { LiveCompletion, LiveDocumentation, LiveImage } from '../common/live';
+import { LiveCompletion, LiveDocumentation, LiveImage, locateLiveDefinition } from '../common/live';
 import { Definition, DefKind } from './analysis';
 import { activeParameter, parseLambdaList } from './lambda-list';
 import { allBindings, Binding, bindingsAt } from './scopes';
@@ -676,14 +675,11 @@ async function liveDefinitionLinks(definitions: Awaited<ReturnType<LiveImage['de
       continue;
     }
     const result = parseLisp(text);
-    let form: Node | null = null;
-    if (def.offset !== undefined) form = topLevelFormAt(result, Math.min(def.offset, text.length));
-    else if (def.form !== undefined) form = result.forms[def.form] ?? null;
-    if (!form) continue;
+    const target = locateLiveDefinition(result, def, text.length);
+    if (!target) continue;
     const uri = pathToFileURL(def.file).toString();
-    const start = positionAt(result, form.start);
-    const selectionStart = def.offset !== undefined ? positionAt(result, Math.min(def.offset, text.length)) : start;
-    links.push(LocationLink.create(uri, Range.create(start, positionAt(result, form.end)), Range.create(selectionStart, selectionStart), origin));
+    const selection = positionAt(result, target.selection);
+    links.push(LocationLink.create(uri, Range.create(positionAt(result, target.form.start), positionAt(result, target.form.end)), Range.create(selection, selection), origin));
   }
   return links;
 }

@@ -9,7 +9,7 @@ import * as fs from 'node:fs';
 import * as net from 'node:net';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { DebuggerEvent, LiveEvaluation, LiveImage, decodeEvaluation, decodeInspector, lispString, nameOf, plist, stringOf } from '../src/common/live';
+import { DebuggerEvent, LiveDefinition, LiveEvaluation, LiveImage, decodeEvaluation, decodeInspector, lispString, locateLiveDefinition, nameOf, plist, stringOf } from '../src/common/live';
 import { parse } from '../src/common/reader';
 
 const BACKEND = path.resolve(__dirname, '..', '..', 'lisp', 'moro-backend.lisp');
@@ -24,6 +24,28 @@ function freePort(): Promise<number> {
     });
   });
 }
+
+test('locating live definitions: positions before or inside the form, and form indexes', () => {
+  const text = '(in-package :cl-user)\n\n(defun f (a)\n  a)\n;; c\n(defvar *v* 1)\n';
+  const result = parse(text);
+  const f = text.indexOf('(defun');
+  const v = text.indexOf('(defvar');
+  const locate = (def: Partial<LiveDefinition>) => {
+    const target = locateLiveDefinition(result, { file: 'x', type: 'function', ...def }, text.length);
+    return target && [target.form.start, target.selection];
+  };
+  // SBCL and ECL report the end of the previous form, ABCL one character later, CCL the form's start.
+  assert.deepEqual(locate({ offset: 21 }), [f, f]);
+  assert.deepEqual(locate({ after: 21 }), [f, f]);
+  assert.deepEqual(locate({ after: 22 }), [f, f]);
+  assert.deepEqual(locate({ offset: f }), [f, f]);
+  assert.deepEqual(locate({ offset: f + 8 }), [f, f + 8], 'inside the form keeps the position');
+  assert.deepEqual(locate({ after: text.indexOf(';; c') - 1 }), [v, v], 'past the comment to the defvar');
+  assert.equal(locate({ after: text.length }), null, 'nothing after the last form');
+  assert.deepEqual(locate({ form: 1 }), [f, f]);
+  assert.equal(locate({ form: 9 }), null);
+  assert.equal(locate({}), null);
+});
 
 test('request helpers', () => {
   assert.equal(lispString('a "b" c\\d'), '"a \\"b\\" c\\\\d"');

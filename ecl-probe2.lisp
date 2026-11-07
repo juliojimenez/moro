@@ -1,0 +1,8 @@
+(load "/private/tmp/moro-27/src1.lisp")
+(defun repl-defined (x) x)
+(dolist (s '(probe-fn probe-mac *probe-var* probe-class probe-gf repl-defined))
+  (format t "~&~A: ~S~%" s (ignore-errors (ext:get-annotation s 'si::location :all))))
+(format t "~&all annotations on probe-fn: ~S~%" (ignore-errors (ext:get-annotation 'probe-fn t :all)))
+(format t "~&setf fn: ~S~%" (ignore-errors (ext:get-annotation '(setf probe-fn) 'si::location :all)))
+(format t "~&describe of get-annotation:~%") (describe 'ext:get-annotation)
+(format t "~&doc: ~A~%" (documentation 'ext:get-annotation 'function))

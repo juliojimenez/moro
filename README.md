@@ -35,7 +35,7 @@ Nothing to install on the Lisp side. The language server is bundled with the ext
 **REPL and live image**
 
 - Runs your implementation in an integrated terminal: SBCL, Roswell, CCL, ECL, CLISP or ABCL are detected automatically, or set `moro.repl.command`. The terminal is a real one: the implementation's own debugger and restarts work as in a shell.
-- The REPL starts with a small backend loaded (`lisp/moro-backend.lisp`). Through it the language server asks the running image for what the static index cannot know: completion, hover, signature help and go to definition for anything loaded in the REPL, in any package. The status bar shows which image is connected.
+- The REPL starts with a small backend loaded (`lisp/moro-backend.lisp`). Through it the language server asks the running image for what the static index cannot know: completion, hover, signature help and go to definition for anything loaded in the REPL, in any package. Definition locations come from the image's own records on SBCL, Clozure CL, ECL and ABCL. The status bar shows which image is connected.
 - Evaluation runs in the image with its output and return values captured: the result appears after the form in the editor and in the **moro results** channel, and Interrupt Evaluation stops a running form. Set `moro.repl.evaluateIn` to `terminal` to send forms to the terminal instead.
 - An error opens the **moro debugger** panel: the condition, the restarts the evaluation offers and the backtrace. Choosing a restart resumes the evaluation inside the image (`use-value` and `store-value` ask for a form to evaluate; number keys work too); Abort, closing the panel or Interrupt Evaluation abandon it, and the error is then reported with the backtrace. Each frame expands to its local variables (SBCL), and any local, like the condition itself, can be opened in the inspector. Set `moro.repl.debugger` to `false` to skip the panel and get the backtrace right away.
 - **Inspect Form** opens an inspector panel on the value of a form: slots of instances, structures and conditions, elements of lists and vectors, hash table entries, a symbol's cells, package and pathname parts, each drillable.
@@ -97,7 +97,7 @@ The REPL is a plain terminal, so anything your implementation prints is shown as
 
 ## Known limitations
 
-- Live-image answers need an implementation with threads (SBCL, ECL, CCL, ABCL, Roswell); CLISP's REPL runs without the backend. Source locations from the image and the local variables of debugger frames come from SBCL only ([#27](https://github.com/juliojimenez/moro/issues/27)); other implementations answer arglists, documentation, completion, evaluation and the debugger's restarts.
+- Live-image answers need an implementation with threads (SBCL, ECL, CCL, ABCL, Roswell); CLISP's REPL runs without the backend. The local variables of debugger frames and the frames of a backtrace come from SBCL (CCL has backtraces too); every supported implementation answers arglists, documentation, completion, evaluation, the debugger's restarts and go to definition.
 - Type positions, definition names and superclass lists are colored by the language server, so they revert to plain coloring while it is starting.
 
 ## Development
