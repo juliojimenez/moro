@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.1
+
+- Documentation release: the README opens with what moro is, has a getting-started section and documents every setting; the Marketplace description says the same. No code changes.
+
 ## 0.2.0
 
 - Highlighting works when a `(` ends its line (the first token of a later line is classified as the head) and when a definer ends its line (the name on a later line is captured, including `(setf name)`, strings and `(name options)` for `defstruct`). The language server also emits semantic tokens for every definition name, so names are colored wherever they sit. Fixes #2.
