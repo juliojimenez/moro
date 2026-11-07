@@ -4,6 +4,7 @@
 
 - Highlighting works when a `(` ends its line (the first token of a later line is classified as the head) and when a definer ends its line (the name on a later line is captured, including `(setf name)`, strings and `(name options)` for `defstruct`). The language server also emits semantic tokens for every definition name, so names are colored wherever they sit. Fixes #2.
 - Feature expressions after `#+` and `#-` are highlighted as such: `and`, `or` and `not` share the reader-conditional color and every other symbol is a feature, nested and across lines. `|escaped symbols|` may span lines, and a backslash escape inside a symbol (`a\|b`, `foo\(bar`) is recognized. Fixes #3.
+- LOOP indentation follows SLIME's `common-lisp-indent-loop-macro-1`: a conditional, or an `else`/`and` alone on its line, indents the next clause two more; continuation keywords (`in`, `=`, `then`, `by`, `of-type`, ...) go two past the clause keyword and align with each other; `and` takes the indentation of the nearest earlier clause line; a body keyword alone on its line indents its forms three in; a form where a clause was expected aligns under the previous form. A conditional whose body clause is on the same line does not indent what follows. Fixes #4.
 
 ## 0.1.2
 

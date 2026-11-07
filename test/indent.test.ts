@@ -139,6 +139,95 @@ const cases: Array<[string, string[], string[], IndentSettings?]> = [
     ['(defun show (xs)', '  (loop for x in xs', '        do (format t "~a~%"', '                   x)))'],
   ],
   [
+    'loop: nested conditionals go back to the clause column after the body clause',
+    ['(loop for x in xs', 'when (a x)', 'when (b x)', 'collect x', 'do (print x))'],
+    ['(loop for x in xs', '      when (a x)', '        when (b x)', '          collect x', '      do (print x))'],
+  ],
+  [
+    'loop: continuation keywords on their own line',
+    ['(loop for x', 'in xs', 'for y', '= (f x)', 'then (g y)', 'for i', 'from 0', 'below 10', 'collect (list x y i))'],
+    [
+      '(loop for x',
+      '        in xs',
+      '      for y',
+      '        = (f x)',
+      '        then (g y)',
+      '      for i',
+      '        from 0',
+      '        below 10',
+      '      collect (list x y i))',
+    ],
+  ],
+  [
+    'loop: and inside a conditional body steals the clause indentation',
+    ['(loop for x in xs', 'when (a x)', 'collect x', 'and sum x into total', 'and count x', 'finally (return total))'],
+    [
+      '(loop for x in xs',
+      '      when (a x)',
+      '        collect x',
+      '        and sum x into total',
+      '        and count x',
+      '      finally (return total))',
+    ],
+  ],
+  [
+    'loop: and after a one-line conditional aligns with it',
+    ['(loop for x in xs', 'when (evenp x) collect x', 'and do (print x)', 'finally (return 1))'],
+    ['(loop for x in xs', '      when (evenp x) collect x', '      and do (print x)', '      finally (return 1))'],
+  ],
+  [
+    'loop: body keyword alone on its line indents its forms three in',
+    ['(loop for x in xs', 'do', '(print x)', '(print y)', 'finally', '(return z))'],
+    ['(loop for x in xs', '      do', '         (print x)', '         (print y)', '      finally', '         (return z))'],
+  ],
+  [
+    'loop: body keyword ending a conditional line indents two in from the line',
+    ['(loop for x in xs', 'when (foo x) do', '(bar x)', '(baz x))'],
+    ['(loop for x in xs', '      when (foo x) do', '        (bar x)', '        (baz x))'],
+  ],
+  [
+    'loop: else alone indents the next clause, else with a clause does not',
+    ['(loop for x in xs', 'if (a x)', 'collect x', 'else', 'do (print x)', 'finally (return 1))', '(loop for x in xs', 'if (a x)', 'collect x', 'else collect (- x)', 'finally (return 1))'],
+    [
+      '(loop for x in xs',
+      '      if (a x)',
+      '        collect x',
+      '      else',
+      '        do (print x)',
+      '      finally (return 1))',
+      '(loop for x in xs',
+      '      if (a x)',
+      '        collect x',
+      '      else collect (- x)',
+      '      finally (return 1))',
+    ],
+  ],
+  [
+    'loop: end goes back to the clause column',
+    ['(loop for x in xs', 'when (a x)', 'collect x', 'end', 'do (print x))'],
+    ['(loop for x in xs', '      when (a x)', '        collect x', '      end', '      do (print x))'],
+  ],
+  [
+    'loop: clauses after "(loop" on its own line, including and',
+    ['(loop', 'for x in xs', 'and y = 1', 'collect x)'],
+    ['(loop', '  for x in xs', '  and y = 1', '  collect x)'],
+  ],
+  [
+    'loop: a multi-line test form still counts as the conditional',
+    ['(loop for x in xs', 'when (and (a x)', '(b x))', 'collect x', 'finally (return 1))'],
+    ['(loop for x in xs', '      when (and (a x)', '                (b x))', '        collect x', '      finally (return 1))'],
+  ],
+  [
+    'loop: a form where a clause was expected aligns under the previous form',
+    ['(loop for x in xs', 'collect (foo x)', '(bar))'],
+    ['(loop for x in xs', '      collect (foo x)', '              (bar))'],
+  ],
+  [
+    'loop: of-type and simple type specs continue the for clause',
+    ['(loop for i', 'of-type fixnum', 'from 0', 'for s', 'fixnum from 1', 'collect i)'],
+    ['(loop for i', '        of-type fixnum', '        from 0', '      for s', '        fixnum from 1', '      collect i)'],
+  ],
+  [
     'defmethod with qualifier',
     ['(defmethod foo :around ((x bar) y)', '(call-next-method))'],
     ['(defmethod foo :around ((x bar) y)', '  (call-next-method))'],
@@ -430,6 +519,13 @@ test('indentationForLine: line out of range is null', () => {
 test('indentationForLine: loop clause position on a fresh line', () => {
   const result = parse('(loop for x in xs\n      when (foo x)\n');
   assert.equal(indentationForLine(result, 2, defaultSettings()), 8);
+});
+
+test('indentationForLine: fresh line after a body keyword, after a body form, after a clause', () => {
+  assert.equal(indentationForLine(parse('(loop for x in xs\n      do\n'), 2, defaultSettings()), 9);
+  assert.equal(indentationForLine(parse('(loop for x in xs\n      do (print x)\n'), 2, defaultSettings()), 9);
+  assert.equal(indentationForLine(parse('(loop for x in xs\n      collect x\n'), 2, defaultSettings()), 6);
+  assert.equal(indentationForLine(parse('(loop\n'), 1, defaultSettings()), 2);
 });
 
 test('CRLF line endings are preserved', () => {

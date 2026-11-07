@@ -178,18 +178,26 @@ const LOCAL_FUNCTION_FORMS = new Set(['FLET', 'LABELS', 'MACROLET']);
 const CLAUSE_FORMS = new Set(['HANDLER-CASE', 'RESTART-CASE']);
 const SLOT_FORMS = new Set(['DEFCLASS', 'DEFINE-CONDITION']);
 
-/** Loop keywords that start a clause (as opposed to continuing one, like IN or BY). */
-const LOOP_CLAUSE_KEYWORDS = new Set([
-  'FOR', 'AS', 'WITH', 'REPEAT', 'WHILE', 'UNTIL', 'ALWAYS', 'NEVER', 'THEREIS', 'INITIALLY', 'FINALLY', 'NAMED',
-  'DO', 'DOING', 'COLLECT', 'COLLECTING', 'APPEND', 'APPENDING', 'NCONC', 'NCONCING', 'SUM', 'SUMMING',
-  'COUNT', 'COUNTING', 'MAXIMIZE', 'MAXIMIZING', 'MINIMIZE', 'MINIMIZING', 'RETURN',
-  'WHEN', 'IF', 'UNLESS', 'ELSE', 'END', 'AND',
-]);
-/** Clause keywords that end any pending conditional and go back to the clause column. */
-const LOOP_TERMINATORS = new Set([
-  'FOR', 'AS', 'WITH', 'REPEAT', 'WHILE', 'UNTIL', 'ALWAYS', 'NEVER', 'THEREIS', 'INITIALLY', 'FINALLY', 'NAMED',
-]);
+/*
+ * LOOP, after SLIME's `common-lisp-indent-loop-macro-1`: a clause line aligns
+ * with the first clause, a conditional (or an ELSE / AND alone on its line)
+ * indents the next clause two more, a continuation keyword (IN, =, BY ...)
+ * goes two past the previous clause keyword, a form continues the previous
+ * body under its first form, and AND steals the indentation of the nearest
+ * earlier clause line that is left of the body.
+ */
+const LOOP_BODY_KEYWORDS = new Set(['DO', 'DOING', 'FINALLY', 'INITIALLY']);
+const LOOP_PREFIX_KEYWORDS = new Set(['AND', 'ELSE']);
 const LOOP_CONDITIONALS = new Set(['WHEN', 'IF', 'UNLESS']);
+const LOOP_CONTINUATION_KEYWORDS = new Set([
+  'FROM', 'UPFROM', 'DOWNFROM', 'TO', 'UPTO', 'DOWNTO', 'BELOW', 'ABOVE', 'BY', 'IN', 'INTO', 'ON', '=', 'THEN', 'ACROSS',
+  'BEING', 'EACH', 'THE', 'OF', 'USING', 'SYMBOL', 'SYMBOLS', 'PRESENT-SYMBOL', 'PRESENT-SYMBOLS', 'EXTERNAL-SYMBOL',
+  'EXTERNAL-SYMBOLS', 'HASH-KEY', 'HASH-KEYS', 'HASH-VALUE', 'HASH-VALUES', 'OF-TYPE', 'FIXNUM', 'FLOAT', 'T', 'NIL',
+]);
+/** `lisp-loop-clauses-indentation`: clauses when "(loop" ends its line. */
+const LOOP_CLAUSES_INDENT = 2;
+/** `lisp-loop-body-forms-indentation`: body forms after DO / FINALLY alone on a line. */
+const LOOP_BODY_FORMS_INDENT = 3;
 
 const TAB_WIDTH = 8;
 
@@ -359,8 +367,9 @@ function indentLambdaList(
   return base;
 }
 
-function isClauseKeyword(node: Node | undefined): node is AtomNode {
-  return !!node && (node.kind === 'symbol' || node.kind === 'keyword') && LOOP_CLAUSE_KEYWORDS.has(node.name);
+/** A bare symbol or keyword token in a loop form (clause keywords are written either way). */
+function isLoopWord(node: Node | undefined): node is AtomNode {
+  return !!node && (node.kind === 'symbol' || node.kind === 'keyword') && node.prefix === '';
 }
 
 function indentLoop(
@@ -372,85 +381,94 @@ function indentLoop(
   colOf: ColumnOf,
 ): number {
   const children = list.children;
-  const head = children[0];
   const parenCol = colOf(list.formStart + list.open.length - 1);
-  const first = children[1];
-  const clauseCol =
-    first && lineOf(result, first.start) === lineOf(result, head.start)
-      ? colOf(first.start)
-      : parenCol + settings.bodyIndent;
+  const consumed = countBefore(children, lineStart); // head included
+  const firstClause = children[1];
 
-  // Group the clause tokens before this line by the line they start on.
-  const groups: Node[][] = [];
-  let previousLine = -1;
-  let consumed = 0;
-  for (let i = 1; i < children.length; i++) {
-    const child = children[i];
-    if (child.start >= lineStart) break;
-    consumed++;
-    const childLine = lineOf(result, child.start);
-    if (childLine !== previousLine) {
-      groups.push([child]);
-      previousLine = childLine;
+  // "(loop" ended its line and this is where the first clause goes.
+  if (!firstClause || consumed < 2) return parenCol + LOOP_CLAUSES_INDENT;
+
+  const firstClauseCol = colOf(firstClause.start);
+  const firstClauseLine = lineOf(result, firstClause.start);
+  const prev = children[consumed - 1];
+
+  // Loop children before this line, grouped by the line they start on.
+  const byLine = new Map<number, Node[]>();
+  for (let i = 1; i < consumed; i++) {
+    const ln = lineOf(result, children[i].start);
+    const group = byLine.get(ln);
+    if (group) group.push(children[i]);
+    else byLine.set(ln, [children[i]]);
+  }
+
+  let defaultValue = firstClauseCol;
+  let loopBodyP = false;
+  let loopBodyIndentation = firstClauseCol;
+  let indentedClauseIndentation = firstClauseCol + settings.bodyIndent;
+
+  const prevLine = lineOf(result, prev.start);
+  const prevTokens = byLine.get(prevLine) ?? [prev];
+  if (isLoopWord(prev) && LOOP_BODY_KEYWORDS.has(prev.name)) {
+    // A body keyword ended its line: its forms go three in from the keyword
+    // when it started the line, two in from the line otherwise.
+    loopBodyP = true;
+    const keywordCol = colOf(prev.start);
+    const lineIndent = colOf(lineInfo(result, prevLine).firstNonBlank);
+    loopBodyIndentation = lineIndent !== keywordCol ? lineIndent + settings.bodyIndent : keywordCol + LOOP_BODY_FORMS_INDENT;
+  } else {
+    // Start of the clause preceding this line, skipping an AND / ELSE prefix
+    // unless it is alone on its line (then it acts like a conditional).
+    let i = 0;
+    while (i + 1 < prevTokens.length) {
+      const token = prevTokens[i];
+      if (!isLoopWord(token) || !LOOP_PREFIX_KEYWORDS.has(token.name)) break;
+      i++;
+    }
+    const clause = prevTokens[i];
+    const clauseCol = colOf(clause.start);
+    if (clause.kind === 'list') {
+      loopBodyP = true; // in the middle of a clause body
+      loopBodyIndentation = clauseCol;
+    } else if (isLoopWord(clause) && LOOP_BODY_KEYWORDS.has(clause.name)) {
+      loopBodyP = true;
+      const after = prevTokens[i + 1];
+      loopBodyIndentation = after ? colOf(after.start) : clauseCol + LOOP_BODY_FORMS_INDENT;
     } else {
-      groups[groups.length - 1].push(child);
+      const name = isLoopWord(clause) ? clause.name : null;
+      if (name && (LOOP_CONDITIONALS.has(name) || LOOP_PREFIX_KEYWORDS.has(name))) {
+        // SLIME indents after any conditional line; a conditional whose body
+        // clause already sits on the same line is complete, so we do not.
+        const completed = prevTokens.length >= i + 4 && isLoopWord(prevTokens[i + 2]);
+        if (!completed) defaultValue = clauseCol + settings.bodyIndent;
+      }
+      // A continuation keyword under another one aligns with it: for y / = (f x) / then (g y).
+      indentedClauseIndentation = name && LOOP_CONTINUATION_KEYWORDS.has(name) ? clauseCol : clauseCol + settings.bodyIndent;
+      loopBodyIndentation = colOf(prev.start); // for a form where a clause was expected
     }
-  }
-  const current = children[1 + consumed];
-  const currentOnLine = current !== undefined && lineOf(result, current.start) === line;
-
-  if (currentOnLine && !isClauseKeyword(current)) {
-    // Continuation of the previous clause's body.
-    const previous = groups[groups.length - 1];
-    if (!previous) return clauseCol;
-    const first = previous[0];
-    if (isClauseKeyword(first)) {
-      return previous.length >= 2 ? colOf(previous[1].start) : colOf(first.start) + settings.bodyIndent;
-    }
-    return colOf(first.start);
   }
 
-  // A clause keyword line (or a blank/comment line, where the next clause goes).
-  let depth = 0;
-  let justCompleted = false;
-  const step = (keyword: string | null, groupLength: number): number => {
-    let closed = false;
-    if (justCompleted && keyword !== 'AND') {
-      depth = Math.max(depth - 1, 0);
-      justCompleted = false;
-      closed = true;
-    }
-    if (keyword === null) return depth;
-    if (LOOP_CONDITIONALS.has(keyword)) {
-      const lineDepth = depth;
-      depth = lineDepth + 1;
-      justCompleted = groupLength > 2;
-      return lineDepth;
-    }
-    if (keyword === 'ELSE') {
-      const lineDepth = depth;
-      depth = lineDepth + 1;
-      justCompleted = groupLength > 1;
-      return lineDepth;
-    }
-    if (keyword === 'END') {
-      if (!closed) depth = Math.max(depth - 1, 0);
-      return depth;
-    }
-    if (LOOP_TERMINATORS.has(keyword)) {
-      depth = 0;
-      return 0;
-    }
-    if (keyword === 'AND') return depth;
-    justCompleted = depth > 0; // a body clause satisfies the pending conditional
-    return depth;
-  };
-  for (const group of groups) {
-    const first = group[0];
-    if (isClauseKeyword(first)) step(first.name, group.length);
+  const current = children[consumed];
+  if (!current || lineOf(result, current.start) !== line) {
+    return loopBodyP ? loopBodyIndentation : defaultValue; // blank or comment line
   }
-  const lineDepth = step(currentOnLine && isClauseKeyword(current) ? current.name : null, 0);
-  return clauseCol + lineDepth * settings.bodyIndent;
+  if (current.kind === 'list') return loopBodyIndentation;
+  if (!isLoopWord(current)) return defaultValue;
+  if (LOOP_CONTINUATION_KEYWORDS.has(current.name)) return indentedClauseIndentation;
+  if (current.name === 'AND') {
+    // Steal the indentation of the nearest earlier clause line left of the body.
+    for (let ln = line - 1; ln > firstClauseLine; ln--) {
+      const tokens = byLine.get(ln);
+      if (!tokens) continue;
+      const first = tokens[0];
+      const col = colOf(first.start);
+      if (col < loopBodyIndentation && isLoopWord(first)) {
+        if (first.name === 'ELSE' && tokens[1]) return colOf(tokens[1].start);
+        return col;
+      }
+    }
+    return defaultValue;
+  }
+  return defaultValue;
 }
 
 function indentInList(
