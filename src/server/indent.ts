@@ -253,13 +253,28 @@ function insideBlockComment(result: ParseResult, lineStart: number): boolean {
   return comment.kind === 'block' && comment.end >= lineStart;
 }
 
+/**
+ * Number of children whose datum begins before `offset`. A child whose
+ * `#+feature` prefix sits on an earlier line than its form (`#+sbcl` alone on
+ * a line, the form on the next) is the current argument on both lines.
+ */
 function countBefore(children: Node[], offset: number): number {
   let n = 0;
   for (const child of children) {
-    if (child.start < offset) n++;
+    if (child.formStart < offset) n++;
     else break;
   }
   return n;
+}
+
+/** True when the node's prefix or its datum begins on `line`. */
+function startsOnLine(result: ParseResult, node: Node, line: number): boolean {
+  return lineOf(result, node.formStart) === line || lineOf(result, node.start) === line;
+}
+
+/** The line a node visibly belongs to: its datum's line when the prefix ended on an earlier line. */
+function visibleLine(result: ParseResult, node: Node): number {
+  return node.prefix.includes('\n') ? lineOf(result, node.formStart) : lineOf(result, node.start);
 }
 
 function containsLambdaListKeyword(list: ListNode): boolean {
@@ -349,7 +364,7 @@ function indentLambdaList(
   const children = list.children;
   const before = countBefore(children, lineStart);
   const current = children[before];
-  if (current && lineOf(result, current.start) === line && isLambdaListKeyword(current)) {
+  if (current && startsOnLine(result, current, line) && isLambdaListKeyword(current)) {
     for (let i = 0; i < before; i++) {
       if (isLambdaListKeyword(children[i])) return colOf(children[i].start);
     }
@@ -367,9 +382,9 @@ function indentLambdaList(
   return base;
 }
 
-/** A bare symbol or keyword token in a loop form (clause keywords are written either way). */
+/** A symbol or keyword token in a loop form, possibly behind a #+feature prefix but never quoted. */
 function isLoopWord(node: Node | undefined): node is AtomNode {
-  return !!node && (node.kind === 'symbol' || node.kind === 'keyword') && node.prefix === '';
+  return !!node && (node.kind === 'symbol' || node.kind === 'keyword') && (node.prefix === '' || node.prefix.startsWith('#'));
 }
 
 function indentLoop(
@@ -389,13 +404,13 @@ function indentLoop(
   if (!firstClause || consumed < 2) return parenCol + LOOP_CLAUSES_INDENT;
 
   const firstClauseCol = colOf(firstClause.start);
-  const firstClauseLine = lineOf(result, firstClause.start);
+  const firstClauseLine = visibleLine(result, firstClause);
   const prev = children[consumed - 1];
 
   // Loop children before this line, grouped by the line they start on.
   const byLine = new Map<number, Node[]>();
   for (let i = 1; i < consumed; i++) {
-    const ln = lineOf(result, children[i].start);
+    const ln = visibleLine(result, children[i]);
     const group = byLine.get(ln);
     if (group) group.push(children[i]);
     else byLine.set(ln, [children[i]]);
@@ -406,7 +421,7 @@ function indentLoop(
   let loopBodyIndentation = firstClauseCol;
   let indentedClauseIndentation = firstClauseCol + settings.bodyIndent;
 
-  const prevLine = lineOf(result, prev.start);
+  const prevLine = visibleLine(result, prev);
   const prevTokens = byLine.get(prevLine) ?? [prev];
   if (isLoopWord(prev) && LOOP_BODY_KEYWORDS.has(prev.name)) {
     // A body keyword ended its line: its forms go three in from the keyword
@@ -448,7 +463,7 @@ function indentLoop(
   }
 
   const current = children[consumed];
-  if (!current || lineOf(result, current.start) !== line) {
+  if (!current || !startsOnLine(result, current, line)) {
     return loopBodyP ? loopBodyIndentation : defaultValue; // blank or comment line
   }
   if (current.kind === 'list') return loopBodyIndentation;
@@ -515,7 +530,7 @@ function indentInList(
     // `(:section :class "x" (:p ...))` markup style: a line that starts with a
     // form is a body form; a line that starts with an atom aligns like a call.
     const current = children[countBefore(children, lineStart)];
-    if (current && lineOf(result, current.start) === line && current.kind === 'list') {
+    if (current && startsOnLine(result, current, line) && current.kind === 'list') {
       return parenCol + settings.bodyIndent;
     }
     plainCall = true;
