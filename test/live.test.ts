@@ -137,6 +137,26 @@ test('evaluation: values, output, warnings, errors with backtraces, no debugger'
   assert.equal(live.connected, true, 'the connection survives all of that');
 });
 
+test('multi-line forms evaluate and inspect (the request spans lines)', { skip: !hasSbcl }, async () => {
+  const defined = await live.evaluate('(defun two-lines (x)\n  "Doc over\n  two lines."\n  (* x 2))\n\n(two-lines 21)', 'CL-USER');
+  assert.equal(defined?.ok, true, defined?.error);
+  assert.deepEqual(defined?.values, ['42']);
+  const doc = await live.documentation('TWO-LINES', 'CL-USER');
+  assert.equal(doc?.docs[0]?.text, 'Doc over\n  two lines.');
+  const inspected = await live.inspect('(list\n 1\n 2)', 'CL-USER');
+  assert.ok(inspected && 'view' in inspected && inspected.view.parts.length === 2);
+  assert.equal(await live.arglist('CAR', 'CL'), '(list)', 'the connection is still aligned');
+});
+
+test('backtraces show the user frames, not the evaluator machinery', { skip: !hasSbcl }, async () => {
+  const failed = await live.evaluate('(in-package #:no-such-package-here)', 'CL-USER');
+  assert.equal(failed?.ok, false);
+  assert.match(failed?.error ?? '', /NO-SUCH-PACKAGE-HERE/);
+  for (const frame of failed!.backtrace) {
+    assert.ok(!/SB-C::|SB-INT:SIMPLE-EVAL|SB-IMPL::%SIMPLE-EVAL|\(EVAL |WITH-SIMPLE-CONDITION-RESTARTS|MORO-BACKEND/.test(frame), `machinery frame kept: ${frame}`);
+  }
+});
+
 test('interrupting a running evaluation from a second connection', { skip: !hasSbcl }, async () => {
   const control = new LiveImage();
   await control.connect({ port, tokenPath });

@@ -3,7 +3,8 @@
 ;;;;
 ;;;; (moro-backend:start port token-file) listens on 127.0.0.1:PORT in a
 ;;;; background thread. A client sends the contents of TOKEN-FILE as its first
-;;;; line, then one request per line; every request gets one response form.
+;;;; line, then one request form after another (a request may span lines, as
+;;;; the text of an :eval usually does); every request gets one response form.
 ;;;; Introspection requests (:arglist :documentation :complete :packages
 ;;;; :definition) are read with *READ-EVAL* bound to NIL and never evaluated.
 ;;;; :eval and :inspect evaluate code the editor sends, as the REPL would, with
@@ -243,21 +244,22 @@
     (error () "#<unprintable>")))
 
 (defparameter *backtrace-noise*
-  '("MORO-BACKEND::" "SB-KERNEL::%SIGNAL" "SB-DEBUG::RUN-HOOK" "INVOKE-DEBUGGER" "(ERROR " "(BREAK " "(WARN "
-    "SB-KERNEL::INTERNAL-ERROR" "SB-KERNEL:INTERNAL-ERROR" "SB-INT:SIMPLE-EVAL-IN-LEXENV" "SB-EVAL::" "(EVAL ")
-  "Frame prefixes of the signalling machinery and of the backend itself, dropped from both ends of a backtrace.")
+  '("MORO-BACKEND::" "SB-KERNEL::%SIGNAL" "SB-DEBUG::" "INVOKE-DEBUGGER" "(ERROR " "(BREAK " "(WARN "
+    "SB-KERNEL::INTERNAL-ERROR" "SB-KERNEL:INTERNAL-ERROR" "SB-KERNEL:WITH-SIMPLE-CONDITION-RESTARTS"
+    "SB-INT:SIMPLE-EVAL-IN-LEXENV" "SB-IMPL::%SIMPLE-EVAL" "SB-IMPL::SIMPLE-EVAL-PROGN-BODY" "SB-EVAL::" "(EVAL "
+    "SB-C::%COMPILE-IN-LEXENV" "SB-C:EVAL-WITH-COMPILE-IN-LEXENV" ":IN SB-C::" "SB-C::COMPILE-TOPLEVEL"
+    "(\"top level form\")")
+  "Frames of the signalling, evaluation and compilation machinery, and of the backend itself.")
 
 (defun noise-frame-p (frame)
   (some (lambda (noise) (search noise frame)) *backtrace-noise*))
 
 (defun trim-backtrace (frames)
-  "FRAMES without the signalling frames on top and the backend's own frames at the bottom."
-  (let* ((start (position-if-not #'noise-frame-p frames))
-         ;; The handler's own frame is named "... :IN EVALUATE-TEXT", so look past the start.
-         (end (and start (position-if (lambda (frame) (search "MORO-BACKEND::EVALUATE-TEXT" frame)) frames :start start))))
-    (if start
-        (subseq frames start (or end (length frames)))
-        '())))
+  "FRAMES above the backend's own call, without the machinery frames."
+  (let ((end (position-if (lambda (frame)
+                            (or (search "(MORO-BACKEND::EVALUATE-TEXT" frame) (search "(MORO-BACKEND::INSPECT-TEXT" frame)))
+                          frames :from-end t)))
+    (remove-if #'noise-frame-p (subseq frames 0 (or end (length frames))))))
 
 (defun capture-backtrace ()
   "A few frames of the current backtrace as strings, where the implementation offers them."
@@ -470,19 +472,28 @@
       (:inspect-view (inspector-view))
       (t (list :error (format nil "unknown request ~S" op))))))
 
-(defun read-request (line)
-  (let ((*read-eval* nil) (*package* (find-package :moro-backend)))
-    (values (read-from-string line))))
+(defun read-request (stream)
+  "The next request form, :EOF at end of input, or (:%unreadable message) after a reader error."
+  (handler-case
+      (let ((*read-eval* nil) (*package* (find-package :moro-backend)))
+        (read stream nil :eof))
+    (end-of-file () :eof)
+    (error (e)
+      ;; The stream position after a reader error is anybody's guess: drop what is buffered.
+      (ignore-errors (clear-input stream))
+      (list :%unreadable (one-line (handler-case (princ-to-string e) (error () "unreadable request")))))))
 
 (defun serve (stream)
   (unwind-protect
        (let ((first (read-line stream nil nil)))
          (if (and first *token* (string= (string-trim '(#\Return #\Space #\Newline) first) *token*))
-             (loop for line = (read-line stream nil nil)
-                   while line
+             (loop for request = (read-request stream)
+                   until (eq request :eof)
                    do (write-response
-                       (handler-case (dispatch (read-request line))
-                         (error (e) (list :error (one-line (handler-case (princ-to-string e) (error () "error"))))))
+                       (if (and (consp request) (eq (first request) :%unreadable))
+                           (list :error (second request))
+                           (handler-case (dispatch request)
+                             (error (e) (list :error (one-line (handler-case (princ-to-string e) (error () "error")))))))
                        stream))
              (write-response (list :error "bad token") stream)))
     (ignore-errors (close stream))))

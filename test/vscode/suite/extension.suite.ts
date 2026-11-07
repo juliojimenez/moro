@@ -145,6 +145,20 @@ test('the REPL started with the backend answers hovers from the live image (sbcl
   );
   assert.match(text, /live image/);
 
+  // A form spanning several lines evaluates in the image; the image then knows it.
+  const multi = await vscode.workspace.openTextDocument({ language: 'commonlisp', content: '(in-package #:cl-user)\n(defun defined-over-lines (a &optional b)\n  "Two lines."\n  (list a b))\n' });
+  const multiEditor = await vscode.window.showTextDocument(multi);
+  multiEditor.selection = new vscode.Selection(new vscode.Position(2, 4), new vscode.Position(2, 4));
+  await vscode.commands.executeCommand('moro.repl.evalTopLevelForm');
+  await waitFor(
+    async () => {
+      const t = hoverText(await vscode.commands.executeCommand<vscode.Hover[]>('vscode.executeHoverProvider', multi.uri, new vscode.Position(1, 10)));
+      return /\(defined-over-lines a &optional b\)/.test(t) && /Two lines\./.test(t) ? t : undefined;
+    },
+    30000,
+    'the image to know the function evaluated from several lines',
+  );
+
   // Macroexpansion through the image opens the expansion beside the editor.
   const source = await vscode.workspace.openTextDocument({ language: 'commonlisp', content: '(in-package #:cl-user)\n(when (foo) (bar) (baz))\n' });
   const editor = await vscode.window.showTextDocument(source);

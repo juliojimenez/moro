@@ -4,6 +4,7 @@
 
 - Macroexpand, describe and apropos run through the image when the backend is connected: the expansion opens as a highlighted Common Lisp document beside the editor and is logged to the results channel; describe and apropos output appears in the results channel. The terminal remains the fallback. Fixes #24.
 - LOOP clause keywords are colored when the `(` of the loop ends the previous line. Fixes #25.
+- Fixed: a form spanning several lines failed to evaluate, inspect or macroexpand through the image with an end-of-file error, and the leftover lines could misalign later answers. The backend now reads whole request forms instead of lines. Backtraces reported for errors in the image no longer include the evaluator and compiler frames.
 
 ## 0.2.1
 
