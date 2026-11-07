@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.1
 
 - Backtraces from Clozure CL show the frames of your code only, with arguments printed plainly, instead of CCL's error machinery and evaluator frames with quoted arguments.
 - README: the getting-started steps and the known limitations describe the debugger panel and what each implementation reports.
