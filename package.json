@@ -205,6 +205,11 @@
           "default": true,
           "description": "Show the REPL terminal (without taking focus) when a form is sent to it."
         },
+        "moro.repl.liveBackend": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Start the REPL with moro's backend loaded (`lisp/moro-backend.lisp`), so completion, hover, signature help and go to definition also know what the image has loaded. The backend listens on a loopback port, requires a token readable only by you, reads requests with `*read-eval*` bound to nil and never evaluates them. Needs threads: SBCL, ECL, Clozure CL, ABCL or Roswell."
+        },
         "moro.indentation.specs": {
           "type": "object",
           "additionalProperties": {
