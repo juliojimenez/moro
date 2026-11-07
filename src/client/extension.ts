@@ -10,6 +10,7 @@ import { ImageSession, SessionState } from './evaluation';
 import * as forms from './forms';
 import * as paredit from './paredit';
 import { LiveImageInfo, Repl, lispPath, lispString } from './repl';
+import { KnownSystem, browseForAsd, knownSystems, rememberSystemFile, systemsDefinedIn } from './systems';
 
 let client: LanguageClient | undefined;
 
@@ -79,10 +80,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     sessionState = state;
     refreshStatus();
   };
+  let connecting: Promise<unknown> = Promise.resolve();
   repl.onImage = (info) => {
     sendImage(info);
-    if (info) void session.connect(info);
+    if (info) connecting = session.connect(info);
     else session.disconnect();
+  };
+  repl.onStarted = () => {
+    void connecting.catch(() => undefined).then(loadStartSystems);
   };
   /** Whether evaluation should go through the image rather than the terminal. */
   const useImage = () => session.connected && vscode.workspace.getConfiguration('moro.repl').get<string>('evaluateIn', 'image') === 'image';
@@ -200,25 +205,59 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   register('moro.repl.loadFile', () => loadFile(false));
   register('moro.repl.compileAndLoadFile', () => loadFile(true));
 
-  const pickSystem = async (): Promise<{ name: string; directory: string } | undefined> => {
-    const files = await vscode.workspace.findFiles('**/*.asd', '**/{node_modules,.git,.qlot}/**', 200);
-    const systems: { name: string; directory: string }[] = [];
-    for (const file of files) {
-      const bytes = await vscode.workspace.fs.readFile(file);
-      for (const name of forms.defsystemNames(Buffer.from(bytes).toString('utf8'))) {
-        systems.push({ name, directory: path.dirname(file.fsPath) });
-      }
-    }
+  type PickedSystem = { name: string; directory: string };
+
+  /**
+   * Browse for an .asd file anywhere, remember it in moro.systems, and (when
+   * asked) return one of the systems it defines.
+   */
+  const addSystemFile = async (pick: boolean): Promise<PickedSystem | undefined> => {
+    const asdPath = await browseForAsd();
+    if (!asdPath) return undefined;
+    const systems = await systemsDefinedIn(asdPath, 'configured');
     if (!systems.length) {
-      const typed = await vscode.window.showInputBox({ prompt: 'ASDF system name', placeHolder: 'my-system' });
-      return typed ? { name: typed, directory: '' } : undefined;
+      void vscode.window.showWarningMessage(`moro: no defsystem found in ${asdPath}.`);
+      return undefined;
     }
+    const entry = await rememberSystemFile(asdPath);
+    void vscode.window.showInformationMessage(`moro: ${entry} added to moro.systems; Load ASDF System now offers ${systems.map((s) => s.name).join(', ')}.`);
+    if (!pick) return undefined;
     if (systems.length === 1) return systems[0];
     const picked = await vscode.window.showQuickPick(
-      systems.map((s) => ({ label: s.name, description: vscode.workspace.asRelativePath(s.directory), system: s })),
+      systems.map((s) => ({ label: s.name, system: s })),
       { placeHolder: 'Select the system to load' },
     );
     return picked?.system;
+  };
+
+  /**
+   * One of the systems defined in the workspace or listed in moro.systems,
+   * chosen by `preset` name without asking, picked from a list otherwise; the
+   * list also offers browsing for an .asd elsewhere and typing a bare name.
+   */
+  const pickSystem = async (known: KnownSystem[], preset?: string): Promise<PickedSystem | undefined> => {
+    if (preset) {
+      const wanted = preset.toLowerCase();
+      return known.find((s) => s.name === wanted) ?? { name: preset, directory: '' };
+    }
+    if (known.length === 1) return known[0];
+    type Item = vscode.QuickPickItem & { system?: KnownSystem; action?: 'browse' | 'name' };
+    const items: Item[] = known.map((s) => ({
+      label: s.name,
+      description: s.origin === 'workspace' ? vscode.workspace.asRelativePath(s.directory) : `$(link-external) ${s.asdPath}`,
+      system: s,
+    }));
+    if (items.length) items.push({ label: '', kind: vscode.QuickPickItemKind.Separator });
+    items.push({ label: '$(folder-opened) Browse for an .asd file…', description: 'anywhere on disk; remembered in moro.systems', action: 'browse' });
+    items.push({ label: '$(edit) Type a system name…', description: 'a system ASDF can find on its own', action: 'name' });
+    const picked = await vscode.window.showQuickPick(items, { placeHolder: known.length ? 'Select the system to load' : 'No .asd file in the workspace' });
+    if (!picked) return undefined;
+    if (picked.system) return picked.system;
+    if (picked.action === 'name') {
+      const typed = await vscode.window.showInputBox({ prompt: 'ASDF system name', placeHolder: 'my-system' });
+      return typed?.trim() ? { name: typed.trim(), directory: '' } : undefined;
+    }
+    return addSystemFile(true);
   };
 
   /**
@@ -227,8 +266,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
    * does not): ASDF is required first and the functions are named by string.
    * An ocicl project loads the ocicl runtime, a qlot project its setup file,
    * and Quicklisp is loaded from ~/quicklisp when the quicklisp loader is chosen.
+   * The directories of every known system go on ASDF's central registry, the
+   * chosen one first, so systems depending on each other resolve.
    */
-  const systemForm = (operation: 'load' | 'test', system: { name: string; directory: string }, loader: string): string => {
+  const systemForm = (operation: 'load' | 'test', system: PickedSystem, loader: string, known: KnownSystem[] = []): string => {
     const folders = vscode.workspace.workspaceFolders?.map((f) => f.uri.fsPath) ?? [];
     const exists = (p: string) => {
       try {
@@ -248,8 +289,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     } else if (loader === 'quicklisp' && exists(path.join(home, 'quicklisp', 'setup.lisp'))) {
       setup.push(`(unless (find-package "QL") (load ${lispPath(path.join(home, 'quicklisp', 'setup.lisp'))}))`);
     }
-    const registry = system.directory
-      ? `(pushnew #p${lispPath(system.directory + path.sep)} (symbol-value (intern "*CENTRAL-REGISTRY*" "ASDF")) :test (function equal))`
+    const directories = [...new Set([...known.map((s) => s.directory).filter((d) => d && d !== system.directory).slice(0, 64), system.directory].filter(Boolean))];
+    const registry = directories.length
+      ? `(dolist (dir (list ${directories.map((d) => `#p${lispPath(d + path.sep)}`).join(' ')})) (pushnew dir (symbol-value (intern "*CENTRAL-REGISTRY*" "ASDF")) :test (function equal)))`
       : '';
     const call = (pkg: string, fn: string) => `(funcall (intern ${lispString(fn)} ${lispString(pkg)}) ${lispString(system.name)})`;
     const action =
@@ -261,14 +303,33 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     return `(progn ${[...setup, registry, action].filter(Boolean).join(' ')})`;
   };
 
-  const systemCommand = async (operation: 'load' | 'test') => {
-    const system = await pickSystem();
+  const systemLoader = () => vscode.workspace.getConfiguration('moro.repl').get<string>('systemLoader', 'asdf');
+
+  /** Load or test a system; `preset` (a command argument) names it without asking. */
+  const systemCommand = async (operation: 'load' | 'test', preset?: unknown) => {
+    const known = await knownSystems();
+    const system = await pickSystem(known, typeof preset === 'string' && preset.trim() ? preset.trim() : undefined);
     if (!system) return;
-    const loader = vscode.workspace.getConfiguration('moro.repl').get<string>('systemLoader', 'asdf');
-    await repl.send(systemForm(operation, system, loader));
+    await repl.send(systemForm(operation, system, systemLoader(), known));
   };
-  register('moro.repl.loadSystem', () => systemCommand('load'));
-  register('moro.repl.testSystem', () => systemCommand('test'));
+
+  /** Loads the systems named in moro.repl.loadOnStart; called once the REPL is up and the backend has connected (or given up). */
+  const loadStartSystems = async () => {
+    const names = vscode.workspace
+      .getConfiguration('moro.repl')
+      .get<unknown[]>('loadOnStart', [])
+      .filter((n): n is string => typeof n === 'string' && !!n.trim());
+    if (!names.length) return;
+    const known = await knownSystems();
+    for (const name of names) {
+      if (!repl.running) return;
+      const system = known.find((s) => s.name === name.trim().toLowerCase()) ?? { name: name.trim(), directory: '' };
+      await repl.send(systemForm('load', system, systemLoader(), known));
+    }
+  };
+  register('moro.repl.loadSystem', (name?: unknown) => systemCommand('load', name));
+  register('moro.repl.testSystem', (name?: unknown) => systemCommand('test', name));
+  register('moro.repl.addSystem', () => addSystemFile(false));
 
   // Inspection
   const expand = async (expander: 'macroexpand-1' | 'macroexpand') => {

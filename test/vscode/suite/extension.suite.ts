@@ -16,6 +16,8 @@ const fixture = process.env.MORO_FIXTURE ?? path.resolve(__dirname, '..', '..', 
 const demoPath = path.join(fixture, 'demo.lisp');
 const fakeLisp = path.join(fixture, 'fake-lisp.sh');
 const sentLog = path.join(fixture, 'sent.log');
+const externalDir = path.join(path.dirname(fixture), 'external');
+const externalAsd = path.join(externalDir, 'extsys.asd');
 const manifest = JSON.parse(fs.readFileSync(path.resolve(__dirname, '..', '..', '..', '..', 'package.json'), 'utf8')) as {
   contributes: { commands: Array<{ command: string }> };
 };
@@ -126,6 +128,62 @@ test('the REPL terminal sends evaluated forms to the implementation', async () =
   assert.match(log, /\(format t "~a, ~a!~%" greeting name\)\)/, 'the whole defun arrives');
   await vscode.commands.executeCommand('moro.repl.stop');
   await waitFor(() => !vscode.window.terminals.some((t) => t.name === 'moro REPL'), 10000, 'the REPL terminal to close');
+});
+
+function readSentLog(): string {
+  return fs.existsSync(sentLog) ? fs.readFileSync(sentLog, 'utf8') : '';
+}
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+test('systems outside the workspace: moro.systems, load on start, and commands taking a system name', async () => {
+  fs.chmodSync(fakeLisp, 0o755);
+  const replConfig = vscode.workspace.getConfiguration('moro.repl');
+  const moroConfig = vscode.workspace.getConfiguration('moro');
+  await replConfig.update('command', fakeLisp, vscode.ConfigurationTarget.Global);
+  await moroConfig.update('systems', [externalAsd], vscode.ConfigurationTarget.Global);
+  await replConfig.update('loadOnStart', ['extsys'], vscode.ConfigurationTarget.Global);
+  const posix = (p: string) => p.split(path.sep).join('/');
+  try {
+    // The language server indexes the external system like a dependency.
+    const probe = await vscode.workspace.openTextDocument({ language: 'commonlisp', content: '(in-package #:cl-user)\n(extsys:ext-fn 1)\n' });
+    await vscode.window.showTextDocument(probe);
+    const hover = await waitFor(
+      async () => {
+        const t = hoverText(await vscode.commands.executeCommand<vscode.Hover[]>('vscode.executeHoverProvider', probe.uri, new vscode.Position(1, 9)));
+        return /External system function\./.test(t) ? t : undefined;
+      },
+      30000,
+      'hover on a symbol of the system listed in moro.systems',
+    );
+    assert.match(hover, /\(dependency\)/);
+
+    // Starting the REPL loads the systems in moro.repl.loadOnStart, with the external directory on the central registry.
+    fs.rmSync(sentLog, { force: true });
+    await vscode.commands.executeCommand('moro.repl.start');
+    await waitFor(() => vscode.window.terminals.find((t) => t.name === 'moro REPL'), 10000, 'the REPL terminal');
+    const startup = await waitFor(() => (readSentLog().includes('"LOAD-SYSTEM"') ? readSentLog() : undefined), 15000, 'the start-up load to reach the fake Lisp');
+    assert.match(startup, /\(require "asdf"\)/);
+    assert.match(startup, new RegExp(escapeRegExp(`#p"${posix(externalDir)}/"`)), 'the external directory goes on the central registry');
+    assert.match(startup, /\(funcall \(intern "LOAD-SYSTEM" "ASDF"\) "extsys"\)/);
+
+    // Load ASDF System and Test ASDF System take a system name and skip the picker.
+    await vscode.commands.executeCommand('moro.repl.loadSystem', 'demo');
+    const loaded = await waitFor(() => (readSentLog().includes('"demo"') ? readSentLog() : undefined), 15000, 'the demo load');
+    assert.match(loaded, /\(funcall \(intern "LOAD-SYSTEM" "ASDF"\) "demo"\)/);
+    assert.match(loaded, new RegExp(escapeRegExp(`#p"${posix(fixture)}/"`)), 'the workspace system directory is registered');
+    assert.match(loaded, new RegExp(escapeRegExp(`#p"${posix(externalDir)}/"`)), 'and so is the external one');
+    await vscode.commands.executeCommand('moro.repl.testSystem', 'extsys');
+    const tested = await waitFor(() => (readSentLog().includes('"TEST-SYSTEM"') ? readSentLog() : undefined), 15000, 'the test-system form');
+    assert.match(tested, /\(funcall \(intern "TEST-SYSTEM" "ASDF"\) "extsys"\)/);
+  } finally {
+    await replConfig.update('loadOnStart', undefined, vscode.ConfigurationTarget.Global);
+    await moroConfig.update('systems', undefined, vscode.ConfigurationTarget.Global);
+    await vscode.commands.executeCommand('moro.repl.stop');
+    await waitFor(() => !vscode.window.terminals.some((t) => t.name === 'moro REPL'), 10000, 'the REPL terminal to close');
+  }
 });
 
 test('the REPL started with the backend answers hovers from the live image (sbcl)', async () => {

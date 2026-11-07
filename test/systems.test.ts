@@ -6,6 +6,7 @@ import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import {
   collectSystemFiles,
+  configuredSystems,
   defaultRegistryRoots,
   dependencyNames,
   discoverSystems,
@@ -145,4 +146,57 @@ test('WorkspaceIndex.scanDependencies indexes only what the workspace uses, as d
   assert.equal(index.files.get(libone)?.source, 'dependency');
   index.dependencySettings.enabled = false;
   assert.equal(await index.scanDependencies([workspace], () => {}), 0);
+});
+
+test('configuredSystems: .asd files and directories, absolute or relative to a workspace folder', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'moro-configured-'));
+  try {
+    const lib = path.join(dir, 'lib');
+    const other = path.join(dir, 'other');
+    const songs = path.join(dir, 'songs');
+    for (const d of [lib, other, songs]) fs.mkdirSync(d);
+    write(path.join(lib, 'lib.asd'), '(defsystem "lib" :components ((:file "lib")))\n(defsystem "lib/tests" :depends-on ("lib"))\n');
+    write(path.join(other, 'alpha.asd'), '(defsystem "alpha")\n');
+    write(path.join(other, 'beta.asd'), '(defsystem "beta")\n');
+    write(path.join(other, 'notes.txt'), 'not a system\n');
+    const found = await configuredSystems([path.join(lib, 'lib.asd'), '../other', 'missing.asd', '  '], [songs], dir);
+    assert.deepEqual(
+      [...found.entries()].sort(),
+      [
+        ['alpha', path.join(other, 'alpha.asd')],
+        ['beta', path.join(other, 'beta.asd')],
+        ['lib', path.join(lib, 'lib.asd')],
+      ],
+      'primary names only, the secondary system folds into lib',
+    );
+    assert.deepEqual([...(await configuredSystems(['~/lib/lib.asd'], [songs], dir)).keys()], ['lib'], '~ expands to the home directory');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('WorkspaceIndex.scanDependencies indexes the systems listed in moro.systems even when nothing in the workspace asks for them', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'moro-songs-'));
+  try {
+    const lib = path.join(dir, 'lib');
+    const songs = path.join(dir, 'songs');
+    fs.mkdirSync(lib);
+    fs.mkdirSync(songs);
+    write(path.join(lib, 'lib.asd'), '(defsystem "lib" :components ((:file "lib")))\n');
+    write(path.join(lib, 'lib.lisp'), '(defpackage #:lib (:use #:cl) (:export #:play))\n(in-package #:lib)\n(defun play (x) "Play X." x)\n');
+    write(path.join(songs, 'song.lisp'), '(in-package #:lib)\n(play 1)\n');
+    const index = new WorkspaceIndex();
+    index.settings = { exclude: [], maxFiles: 100 };
+    index.dependencySettings = { enabled: true, registries: [], maxFiles: 4000, systems: ['../lib/lib.asd'] };
+    await index.scanFolders([songs], () => {});
+    const count = await index.scanDependencies([songs], () => {});
+    assert.equal(count, 2, 'the .asd and the source file of the configured system');
+    const libLisp = pathToFileURL(path.join(lib, 'lib.lisp')).toString();
+    assert.equal(index.files.get(libLisp)?.source, 'dependency');
+    assert.ok(index.dependencySystems.has('lib'));
+    assert.deepEqual(index.missingSystems, []);
+    assert.equal(index.files.get(pathToFileURL(path.join(songs, 'song.lisp')).toString())?.source, 'workspace');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
