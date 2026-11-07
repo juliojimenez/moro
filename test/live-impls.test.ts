@@ -25,13 +25,15 @@ interface Implementation {
   implementation: RegExp;
   /** How this implementation reports the location of a form. */
   position: 'offset' | 'after';
+  /** Whether errors come with the frames of the user's code. */
+  frames: boolean;
 }
 
 const IMPLEMENTATIONS: Implementation[] = [
-  { name: 'sbcl', command: 'sbcl', quiet: ['--noinform', '--non-interactive'], implementation: /SBCL/, position: 'offset' },
-  { name: 'ecl', command: 'ecl', quiet: ['--norc', '-q'], implementation: /ECL/, position: 'after' },
-  { name: 'ccl', command: 'ccl', quiet: ['--no-init', '--batch'], implementation: /Clozure/, position: 'offset' },
-  { name: 'abcl', command: 'abcl', quiet: ['--noinit', '--noinform'], implementation: /Armed Bear/, position: 'after' },
+  { name: 'sbcl', command: 'sbcl', quiet: ['--noinform', '--non-interactive'], implementation: /SBCL/, position: 'offset', frames: true },
+  { name: 'ecl', command: 'ecl', quiet: ['--norc', '-q'], implementation: /ECL/, position: 'after', frames: false },
+  { name: 'ccl', command: 'ccl', quiet: ['--no-init', '--batch'], implementation: /Clozure/, position: 'offset', frames: true },
+  { name: 'abcl', command: 'abcl', quiet: ['--noinit', '--noinform'], implementation: /Armed Bear/, position: 'after', frames: false },
 ];
 
 function onPath(command: string): boolean {
@@ -55,7 +57,9 @@ function freePort(): Promise<number> {
   });
 }
 
-const SOURCE = '(in-package :cl-user)\n\n(defun impl-probe-fn (a &key b)\n  "Probe doc."\n  (list a b))\n\n;; a comment before the next form\n(defvar *impl-probe-var* 1)\n';
+const SOURCE =
+  '(in-package :cl-user)\n\n(defun impl-probe-fn (a &key b)\n  "Probe doc."\n  (list a b))\n\n;; a comment before the next form\n(defvar *impl-probe-var* 1)\n\n' +
+  '(defun impl-probe-fail (x) (error "fail ~a" x))\n(defun impl-probe-caller (x) (let ((r (impl-probe-fail x))) (list r)))\n';
 const FN_START = SOURCE.indexOf('(defun impl-probe-fn');
 const VAR_START = SOURCE.indexOf('(defvar *impl-probe-var*');
 
@@ -119,6 +123,19 @@ for (const impl of IMPLEMENTATIONS) {
       const failed = await live.evaluate('(error "boom")', 'CL-USER');
       assert.equal(failed?.ok, false);
       assert.match(failed?.error ?? '', /boom/);
+    });
+
+    test('backtraces: the frames of the loaded code, without the machinery', async () => {
+      const failed = await live.evaluate('(impl-probe-caller 7)', 'CL-USER');
+      assert.equal(failed?.ok, false);
+      assert.match(failed?.error ?? '', /fail 7/);
+      const frames = failed?.backtrace ?? [];
+      if (impl.frames) {
+        assert.ok(frames.some((f) => /IMPL-PROBE-FAIL/.test(f)) && frames.some((f) => /IMPL-PROBE-CALLER/.test(f)), frames.join(' | '));
+        assert.ok(!frames.some((f) => /CCL::|BACKTRACE-AS-LIST|MORO-BACKEND|SB-KERNEL|"7"/.test(f)), frames.join(' | '));
+      } else {
+        assert.deepEqual(frames, []);
+      }
     });
 
     test('debugger: a restart with a value resumes, abort abandons', async () => {
