@@ -191,9 +191,18 @@ function listPositions(list: ListNode, out: TypePosition[]): void {
       return;
     }
     case 'DEFCLASS':
-    case 'DEFINE-CONDITION':
+    case 'DEFINE-CONDITION': {
+      // Superclasses are class names; the grammar colors them only when the
+      // class name is on the definer's line, the server covers every layout.
+      const supers = children[2];
+      if (isList(supers)) {
+        for (const parent of supers.children) {
+          if (isTypeSymbol(parent)) push(out, parent);
+        }
+      }
       slotTypes(children[3], out);
       return;
+    }
     case 'DEFSTRUCT':
       slotTypes({ ...list, children: children.slice(2) } as ListNode, out);
       return;

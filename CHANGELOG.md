@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Highlighting works when a `(` ends its line (the first token of a later line is classified as the head) and when a definer ends its line (the name on a later line is captured, including `(setf name)`, strings and `(name options)` for `defstruct`). The language server also emits semantic tokens for every definition name, so names are colored wherever they sit. Fixes #2.
+
 ## 0.1.2
 
 - The name is spelled `moro`, lowercase, everywhere: Marketplace listing, command palette category, context menu, settings section, output channel, REPL terminal and messages.

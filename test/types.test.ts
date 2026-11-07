@@ -36,8 +36,10 @@ test('the, check-type and quoted type arguments', () => {
 test('defmethod specializers, slot types and loop of-type', () => {
   assert.deepEqual(types('(defmethod m :around ((o point) (n integer) (k (eql 1)) &key (x list)) o)'), ['point', 'integer']);
   assert.deepEqual(types('(defclass c () ((x :type fixnum :initarg :x) y (z :type (or null string))))'), ['fixnum', 'null', 'string']);
+  assert.deepEqual(types('(defclass c (base mixin) ())'), ['base', 'mixin']);
+  assert.deepEqual(types('(define-condition my-error (error) ())'), ['error']);
   assert.deepEqual(types('(defstruct s (a 0 :type fixnum) b)'), ['fixnum']);
-  assert.deepEqual(types('(define-condition e (error) ((code :type integer)))'), ['integer']);
+  assert.deepEqual(types('(define-condition e (error) ((code :type integer)))'), ['error', 'integer']);
   assert.deepEqual(types('(loop for i of-type fixnum from 0 below 3 for s of-type (or null string) in xs collect s)'), ['fixnum', 'null', 'string']);
 });
 

@@ -126,16 +126,26 @@ let proc: ChildProcess;
 let client: LspClient;
 let demoUri: string;
 let tokenTypes: string[] = [];
+let tokenModifiers: string[] = [];
 
-/** Decodes LSP semantic token data into absolute (line, character, length, type). */
-function decodeTokens(data: number[]): Array<{ line: number; character: number; length: number; type: string }> {
-  const out: Array<{ line: number; character: number; length: number; type: string }> = [];
+interface DecodedToken {
+  line: number;
+  character: number;
+  length: number;
+  type: string;
+  modifiers: string[];
+}
+
+/** Decodes LSP semantic token data into absolute positions with type and modifier names. */
+function decodeTokens(data: number[]): DecodedToken[] {
+  const out: DecodedToken[] = [];
   let line = 0;
   let character = 0;
   for (let i = 0; i < data.length; i += 5) {
     line += data[i];
     character = data[i] === 0 ? character + data[i + 1] : data[i + 1];
-    out.push({ line, character, length: data[i + 2], type: tokenTypes[data[i + 3]] });
+    const modifiers = tokenModifiers.filter((_, bit) => (data[i + 4] & (1 << bit)) !== 0);
+    out.push({ line, character, length: data[i + 2], type: tokenTypes[data[i + 3]], modifiers });
   }
   return out;
 }
@@ -157,7 +167,9 @@ before(async () => {
   });
   assert.ok(init.capabilities.hoverProvider);
   assert.ok(init.capabilities.semanticTokensProvider);
-  tokenTypes = (init.capabilities.semanticTokensProvider as { legend: { tokenTypes: string[] } }).legend.tokenTypes;
+  const legend = (init.capabilities.semanticTokensProvider as { legend: { tokenTypes: string[]; tokenModifiers: string[] } }).legend;
+  tokenTypes = legend.tokenTypes;
+  tokenModifiers = legend.tokenModifiers;
   client.notify('initialized', {});
   client.notify('textDocument/didOpen', { textDocument: { uri: demoUri, languageId: 'commonlisp', version: 1, text: DEMO } });
   await new Promise((r) => setTimeout(r, 400)); // let the workspace scan finish
@@ -272,6 +284,17 @@ test('folding, selection ranges and semantic tokens', async () => {
   assert.equal(typeToken?.length, 'error'.length);
   const greetCall = position('(greet "world")', 1);
   assert.equal(decoded.find((t) => t.line === greetCall.line && t.character === greetCall.character)?.type, 'function');
+  const at = (needle: string, extra: number) => {
+    const p = position(needle, extra);
+    return decoded.find((t) => t.line === p.line && t.character === p.character);
+  };
+  const greetDef = at('(defun greet', 7);
+  assert.equal(greetDef?.type, 'function');
+  assert.deepEqual(greetDef?.modifiers, ['definition'], 'definition names carry the definition modifier');
+  assert.equal(greetDef?.length, 'greet'.length);
+  const pkgDef = at('(defpackage #:demo', 14);
+  assert.equal(pkgDef?.type, 'namespace');
+  assert.equal(pkgDef?.length, 'demo'.length, 'the #: prefix is not part of the name token');
 });
 
 test('diagnostics for broken structure and formatting', async () => {
