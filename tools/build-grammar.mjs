@@ -100,19 +100,71 @@ const PACKAGE_CAPTURES = {
   3: { name: 'punctuation.accessor.commonlisp' },
 };
 
-// A definer form: "(" prefix? definer name? ... ")" where the name gets nameScope.
-function definerRule(names, nameScope, { nameMatch = SYMBOL } = {}) {
+// Definers and heads.
+//
+// A definer's name usually follows it on the same line and is captured by the
+// definer rule's begin regex. When the line ends right after the definer
+// ("(defun\n    long-name ()"), a name-wait rule takes over: anchored right after
+// the definer word, it ends by consuming the name on a later line. Likewise,
+// when a "(" ends its line, head-wait classifies the first token of a later
+// line as the head and hands definers to the deferred-definer rules (issue #2).
+const REST_OF_LINE_BLANK = '(?=\\s*(?:;|#\\||$))';
+const WAIT_PATTERNS = [{ include: '#comment-block' }, { include: '#comment-line' }];
+const PACKAGE_SCOPES = ['entity.name.namespace.package.commonlisp', 'punctuation.accessor.commonlisp'];
+const scopesFrom = (offset, scopes) => Object.fromEntries(scopes.map((name, i) => [offset + 1 + i, { name }]));
+
+// name or (setf name): 5 groups
+const FUNCTION_NAME = `(?:(\\()\\s*((?i:setf))\\s+(${SYMBOL})\\s*(\\))|(${SYMBOL}))`;
+const FUNCTION_NAME_SCOPES = [
+  PAREN_BEGIN, 'keyword.control.commonlisp', 'entity.name.function.commonlisp', PAREN_END, 'entity.name.function.commonlisp',
+];
+
+const DEFINER_KINDS = [
+  { id: 'function', names: DEFINERS.function, name: FUNCTION_NAME, scopes: FUNCTION_NAME_SCOPES },
+  { id: 'class', names: DEFINERS.class, name: `(${SYMBOL})`, scopes: ['entity.name.type.class.commonlisp'], extra: ['#superclass-list'] },
+  { id: 'type', names: DEFINERS.type, name: `(${SYMBOL})`, scopes: ['entity.name.type.class.commonlisp'] },
+  { id: 'variable', names: DEFINERS.variable, name: `(${SYMBOL})`, scopes: ['variable.other.global.commonlisp'] },
+  { id: 'constant', names: DEFINERS.constant, name: `(${SYMBOL})`, scopes: ['variable.other.constant.commonlisp'] },
+  { id: 'namespace', names: DEFINERS.namespace, name: `("[^"]*"|${SYMBOL})`, scopes: ['entity.name.namespace.commonlisp'] },
+];
+
+function definerRules({ id, names, name, scopes, extra = [] }) {
+  // definer [name]: package (2 groups), definer word, name groups
+  const tail = `${PACKAGE_PREFIX}(${ci(names)})${NOT_AFTER}(?:\\s+${name})?`;
+  const extraPatterns = extra.map((include) => ({ include }));
   return {
-    begin: `(\\()\\s*${PACKAGE_PREFIX}(${ci(names)})${NOT_AFTER}(?:\\s+(${nameMatch}))?`,
-    beginCaptures: {
-      1: { name: PAREN_BEGIN },
-      ...PACKAGE_CAPTURES,
-      4: { name: 'storage.type.commonlisp' },
-      5: { name: nameScope },
+    [`definer-${id}`]: {
+      begin: `(\\()\\s*${tail}`,
+      beginCaptures: {
+        1: { name: PAREN_BEGIN },
+        ...scopesFrom(1, PACKAGE_SCOPES),
+        4: { name: 'storage.type.commonlisp' },
+        ...scopesFrom(4, scopes),
+      },
+      end: '\\)',
+      endCaptures: { 0: { name: PAREN_END } },
+      patterns: [{ include: `#name-wait-${id}` }, ...extraPatterns, { include: '$self' }],
     },
-    end: '\\)',
-    endCaptures: { 0: { name: PAREN_END } },
-    patterns: [{ include: '$self' }],
+    [`name-wait-${id}`]: {
+      // The definer word ended its line: the name is on a later line.
+      begin: `(?i)(?<=${alternation(names)})\\G${REST_OF_LINE_BLANK}`,
+      end: `${name}|(?=\\S)`,
+      endCaptures: scopesFrom(0, scopes),
+      applyEndPatternLast: 1,
+      patterns: WAIT_PATTERNS,
+    },
+    [`deferred-definer-${id}`]: {
+      // Reached from head-wait: the "(" was on an earlier line.
+      begin: tail,
+      beginCaptures: {
+        ...scopesFrom(0, PACKAGE_SCOPES),
+        3: { name: 'storage.type.commonlisp' },
+        ...scopesFrom(3, scopes),
+      },
+      end: '(?=\\S)',
+      applyEndPatternLast: 1,
+      patterns: [...WAIT_PATTERNS, { include: `#name-wait-${id}` }, ...extraPatterns],
+    },
   };
 }
 
@@ -177,28 +229,6 @@ const repository = {
     name: 'constant.character.commonlisp',
     match: `#\\\\(?:[A-Za-z0-9]${CONSTITUENT}*|.)`,
   },
-  'definer-function': {
-    // (defun name ...) or (defun (setf name) ...)
-    begin: `(\\()\\s*${PACKAGE_PREFIX}(${ci(DEFINERS.function)})${NOT_AFTER}(?:\\s+(?:(\\()\\s*((?i:setf))\\s+(${SYMBOL})\\s*(\\))|(${SYMBOL})))?`,
-    beginCaptures: {
-      1: { name: PAREN_BEGIN },
-      ...PACKAGE_CAPTURES,
-      4: { name: 'storage.type.commonlisp' },
-      5: { name: PAREN_BEGIN },
-      6: { name: 'keyword.control.commonlisp' },
-      7: { name: 'entity.name.function.commonlisp' },
-      8: { name: PAREN_END },
-      9: { name: 'entity.name.function.commonlisp' },
-    },
-    end: '\\)',
-    endCaptures: { 0: { name: PAREN_END } },
-    patterns: [{ include: '$self' }],
-  },
-  'definer-class': {
-    // (defclass name (superclass*) ...) -- the superclass list follows the name
-    ...definerRule(DEFINERS.class, 'entity.name.type.class.commonlisp'),
-    patterns: [{ include: '#superclass-list' }, { include: '$self' }],
-  },
   'superclass-list': {
     begin: '\\G\\s*(\\()',
     beginCaptures: { 1: { name: PAREN_BEGIN } },
@@ -209,7 +239,6 @@ const repository = {
       { match: SYMBOL, name: 'entity.other.inherited-class.commonlisp' },
     ],
   },
-  'definer-type': definerRule(DEFINERS.type, 'entity.name.type.class.commonlisp'),
   'definer-struct': {
     begin: `(\\()\\s*${PACKAGE_PREFIX}(${ci(DEFINERS.struct)})${NOT_AFTER}`,
     beginCaptures: {
@@ -220,9 +249,60 @@ const repository = {
     end: '\\)',
     endCaptures: { 0: { name: PAREN_END } },
     patterns: [
+      { include: '#struct-name-wait' },
       { include: '#definer-struct-name-list' },
       { include: '#definer-struct-name' },
       { include: '$self' },
+    ],
+  },
+  'struct-name-wait': {
+    // (defstruct\n  name ...) or (defstruct\n  (name option*) ...)
+    begin: `(?i)(?<=defstruct)\\G${REST_OF_LINE_BLANK}`,
+    end: `(${SYMBOL})|(?=\\S)`,
+    endCaptures: { 1: { name: 'entity.name.type.class.commonlisp' } },
+    applyEndPatternLast: 1,
+    patterns: [...WAIT_PATTERNS, { include: '#struct-name-list' }],
+  },
+  'struct-name-list': {
+    begin: `(\\()\\s*(${SYMBOL})`,
+    beginCaptures: {
+      1: { name: PAREN_BEGIN },
+      2: { name: 'entity.name.type.class.commonlisp' },
+    },
+    end: '\\)',
+    endCaptures: { 0: { name: PAREN_END } },
+    patterns: [{ include: '$self' }],
+  },
+  'deferred-definer-struct': {
+    begin: `${PACKAGE_PREFIX}((?i:defstruct))${NOT_AFTER}`,
+    beginCaptures: {
+      ...scopesFrom(0, PACKAGE_SCOPES),
+      3: { name: 'storage.type.commonlisp' },
+    },
+    end: '(?=\\S)',
+    applyEndPatternLast: 1,
+    patterns: [
+      ...WAIT_PATTERNS,
+      { include: '#struct-name-wait' },
+      { include: '#definer-struct-name-list' },
+      { include: '#definer-struct-name' },
+    ],
+  },
+  'head-wait': {
+    // "(" ended its line: the first token of a later line is the head.
+    begin: `(?<=\\()\\G${REST_OF_LINE_BLANK}`,
+    end: `${PACKAGE_PREFIX}(?:(${ci([...declarations])})|(${ci(controlWords)})|(${ci(functions)}))${NOT_AFTER}|(?=\\S)`,
+    endCaptures: {
+      ...scopesFrom(0, PACKAGE_SCOPES),
+      3: { name: 'keyword.other.declaration.commonlisp' },
+      4: { name: 'keyword.control.commonlisp' },
+      5: { name: 'support.function.commonlisp' },
+    },
+    applyEndPatternLast: 1,
+    patterns: [
+      ...WAIT_PATTERNS,
+      ...DEFINER_KINDS.map(({ id }) => ({ include: `#deferred-definer-${id}` })),
+      { include: '#deferred-definer-struct' },
     ],
   },
   'definer-struct-name-list': {
@@ -240,11 +320,6 @@ const repository = {
     match: `\\G\\s+(${SYMBOL})`,
     captures: { 1: { name: 'entity.name.type.class.commonlisp' } },
   },
-  'definer-variable': definerRule(DEFINERS.variable, 'variable.other.global.commonlisp'),
-  'definer-constant': definerRule(DEFINERS.constant, 'variable.other.constant.commonlisp'),
-  'definer-namespace': definerRule(DEFINERS.namespace, 'entity.name.namespace.commonlisp', {
-    nameMatch: `"[^"]*"|${SYMBOL}`,
-  }),
   loop: {
     begin: `(\\()\\s*${PACKAGE_PREFIX}((?i:loop))${NOT_AFTER}`,
     beginCaptures: {
@@ -265,7 +340,7 @@ const repository = {
     beginCaptures: { 0: { name: PAREN_BEGIN } },
     end: '\\)',
     endCaptures: { 0: { name: PAREN_END } },
-    patterns: [{ include: '$self' }],
+    patterns: [{ include: '#head-wait' }, { include: '$self' }],
   },
   'number-radix': {
     name: 'constant.numeric.radix.commonlisp',
@@ -337,6 +412,8 @@ const repository = {
   variable: symbolRule(variables, 'support.variable.commonlisp'),
   constant: symbolRule(constants, 'support.constant.commonlisp'),
 };
+
+Object.assign(repository, ...DEFINER_KINDS.map(definerRules));
 
 // Order matters: at equal match positions the earlier rule wins.
 const ORDER = [

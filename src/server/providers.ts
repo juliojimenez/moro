@@ -63,8 +63,8 @@ export interface ServerContext {
   hyperspecBase: string;
 }
 
-export const SEMANTIC_TOKEN_TYPES = ['function', 'macro', 'parameter', 'variable', 'type'];
-export const SEMANTIC_TOKEN_MODIFIERS = ['declaration'];
+export const SEMANTIC_TOKEN_TYPES = ['function', 'macro', 'parameter', 'variable', 'type', 'class', 'struct', 'namespace', 'property'];
+export const SEMANTIC_TOKEN_MODIFIERS = ['declaration', 'definition', 'readonly'];
 
 const LOOP_KEYWORDS = [
   'for', 'as', 'with', 'and', 'in', 'on', 'across', 'being', 'each', 'the', 'hash-key', 'hash-keys', 'hash-value', 'hash-values',
@@ -770,6 +770,37 @@ export function selectionRanges(file: IndexedFile, positions: Position[]): Selec
 // ---------------------------------------------------------------------------
 // Semantic tokens
 
+function definitionTokenType(kind: DefKind): string | null {
+  switch (kind) {
+    case 'function':
+    case 'generic':
+    case 'method':
+    case 'setf':
+    case 'accessor':
+      return 'function';
+    case 'macro':
+      return 'macro';
+    case 'variable':
+    case 'constant':
+    case 'symbol-macro':
+      return 'variable';
+    case 'class':
+    case 'condition':
+      return 'class';
+    case 'struct':
+      return 'struct';
+    case 'type':
+      return 'type';
+    case 'package':
+    case 'system':
+      return 'namespace';
+    case 'slot':
+      return 'property';
+    default:
+      return null;
+  }
+}
+
 interface Token {
   start: number;
   length: number;
@@ -848,6 +879,24 @@ export function semanticTokens(ctx: ServerContext, file: IndexedFile): SemanticT
   const typeIdx = typeIndex('type');
   for (const position of typePositions(parse)) {
     tokens.push({ start: position.start, length: position.end - position.start, type: typeIdx, modifiers: 0, priority: 1 });
+  }
+
+  // Definition names, wherever they sit: the grammar only captures a name on
+  // the same line as its definer (issue #2). A defstruct slot and the accessor
+  // derived from it share a range; the slot wins because it comes first.
+  const definition = 1 << SEMANTIC_TOKEN_MODIFIERS.indexOf('definition');
+  const readonly = 1 << SEMANTIC_TOKEN_MODIFIERS.indexOf('readonly');
+  for (const def of file.analysis.flat) {
+    const tokenType = definitionTokenType(def.kind);
+    const [start, end] = def.nameRange;
+    if (!tokenType || end <= start) continue;
+    tokens.push({
+      start,
+      length: end - start,
+      type: typeIndex(tokenType),
+      modifiers: definition | (def.kind === 'constant' ? readonly : 0),
+      priority: 2,
+    });
   }
 
   tokens.sort((a, b) => a.start - b.start || (b.priority ?? 0) - (a.priority ?? 0) || b.modifiers - a.modifiers);
