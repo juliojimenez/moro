@@ -1,10 +1,12 @@
 /**
  * moro: Common Lisp for Visual Studio Code.
  */
+import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { LanguageClient, LanguageClientOptions, ServerOptions, TransportKind } from 'vscode-languageclient/node';
-import { ImageSession } from './evaluation';
+import { ImageSession, SessionState } from './evaluation';
 import * as forms from './forms';
 import * as paredit from './paredit';
 import { LiveImageInfo, Repl, lispPath, lispString } from './repl';
@@ -58,19 +60,23 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   showStatus({ connected: false });
   context.subscriptions.push(status);
   const sendImage = (info: LiveImageInfo | null) => void client?.sendNotification('moro/liveImage', info);
-  let busy = false;
+  let sessionState: SessionState = 'idle';
   let lastStatus: LiveStatus = { connected: false };
   const refreshStatus = () => {
-    if (busy) {
-      status.text = `$(sync~spin) moro: evaluating`;
+    if (sessionState === 'debugger') {
+      status.text = '$(debug) moro: debugger';
+      status.tooltip = 'moro: an evaluation is waiting in the debugger panel (Interrupt Evaluation aborts it)';
+      status.show();
+    } else if (sessionState === 'evaluating') {
+      status.text = '$(sync~spin) moro: evaluating';
       status.tooltip = 'moro: evaluating in the image (Interrupt Evaluation stops it)';
       status.show();
     } else {
       showStatus(lastStatus);
     }
   };
-  session.onBusy = (b) => {
-    busy = b;
+  session.onState = (state) => {
+    sessionState = state;
     refreshStatus();
   };
   repl.onImage = (info) => {
@@ -215,18 +221,51 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     return picked?.system;
   };
 
+  /**
+   * The form that loads or tests a system. It never reads an `asdf:` or `ql:`
+   * symbol, because the image may not have ASDF yet (SBCL without a .sbclrc
+   * does not): ASDF is required first and the functions are named by string.
+   * An ocicl project loads the ocicl runtime, a qlot project its setup file,
+   * and Quicklisp is loaded from ~/quicklisp when the quicklisp loader is chosen.
+   */
+  const systemForm = (operation: 'load' | 'test', system: { name: string; directory: string }, loader: string): string => {
+    const folders = vscode.workspace.workspaceFolders?.map((f) => f.uri.fsPath) ?? [];
+    const exists = (p: string) => {
+      try {
+        return fs.existsSync(p);
+      } catch {
+        return false;
+      }
+    };
+    const setup: string[] = ['(require "asdf")'];
+    const home = os.homedir();
+    const ociclRuntime = path.join(home, '.local', 'share', 'ocicl', 'ocicl-runtime.lisp');
+    const qlotSetup = folders.map((f) => path.join(f, '.qlot', 'setup.lisp')).find(exists);
+    if (folders.some((f) => exists(path.join(f, 'ocicl.csv'))) && exists(ociclRuntime)) {
+      setup.push(`(unless (find-package "OCICL-RUNTIME") (load ${lispPath(ociclRuntime)}))`);
+    } else if (qlotSetup) {
+      setup.push(`(unless (find-package "QL") (load ${lispPath(qlotSetup)}))`);
+    } else if (loader === 'quicklisp' && exists(path.join(home, 'quicklisp', 'setup.lisp'))) {
+      setup.push(`(unless (find-package "QL") (load ${lispPath(path.join(home, 'quicklisp', 'setup.lisp'))}))`);
+    }
+    const registry = system.directory
+      ? `(pushnew #p${lispPath(system.directory + path.sep)} (symbol-value (intern "*CENTRAL-REGISTRY*" "ASDF")) :test (function equal))`
+      : '';
+    const call = (pkg: string, fn: string) => `(funcall (intern ${lispString(fn)} ${lispString(pkg)}) ${lispString(system.name)})`;
+    const action =
+      operation === 'test'
+        ? call('ASDF', 'TEST-SYSTEM')
+        : loader === 'quicklisp'
+          ? `(if (find-package "QL") ${call('QL', 'QUICKLOAD')} ${call('ASDF', 'LOAD-SYSTEM')})`
+          : call('ASDF', 'LOAD-SYSTEM');
+    return `(progn ${[...setup, registry, action].filter(Boolean).join(' ')})`;
+  };
+
   const systemCommand = async (operation: 'load' | 'test') => {
     const system = await pickSystem();
     if (!system) return;
     const loader = vscode.workspace.getConfiguration('moro.repl').get<string>('systemLoader', 'asdf');
-    const registry = system.directory ? `(pushnew #p${lispPath(system.directory + path.sep)} asdf:*central-registry* :test #'equal) ` : '';
-    const action =
-      operation === 'test'
-        ? `(asdf:test-system ${lispString(system.name)})`
-        : loader === 'quicklisp'
-          ? `(ql:quickload ${lispString(system.name)})`
-          : `(asdf:load-system ${lispString(system.name)})`;
-    await repl.send(`(progn ${registry}${action})`);
+    await repl.send(systemForm(operation, system, loader));
   };
   register('moro.repl.loadSystem', () => systemCommand('load'));
   register('moro.repl.testSystem', () => systemCommand('test'));

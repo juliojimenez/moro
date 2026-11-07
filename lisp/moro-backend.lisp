@@ -8,9 +8,13 @@
 ;;;; Introspection requests (:arglist :documentation :complete :packages
 ;;;; :definition) are read with *READ-EVAL* bound to NIL and never evaluated.
 ;;;; :eval and :inspect evaluate code the editor sends, as the REPL would, with
-;;;; output and return values captured and errors reported back instead of
-;;;; entering the debugger; :interrupt stops a running evaluation. Every
-;;;; connection runs in its own thread, so an evaluation never blocks completion.
+;;;; output and return values captured. An error either comes back with a
+;;;; backtrace, or, when the :eval asked for the debugger, opens a debugger loop
+;;;; on the evaluation thread: the client receives a (:debug ...) event with the
+;;;; restarts and frames and answers with :invoke-restart, :frame-locals,
+;;;; :inspect-local, :inspect-condition or :abort until control transfers.
+;;;; :interrupt stops a running evaluation. Every connection runs in its own
+;;;; thread, so an evaluation never blocks completion.
 ;;;;
 ;;;; Supported: SBCL and ECL (sb-bsd-sockets), Clozure CL (ccl:make-socket),
 ;;;; ABCL (java.net). CLISP has no threads; START returns NIL there.
@@ -29,6 +33,10 @@
 (defvar *thread* nil)
 (defvar *token* nil)
 (defvar *eval-thread* nil "The thread running an :eval or :inspect request, while one does.")
+(defvar *client-stream* nil "The stream of the connection being served, for debugger events.")
+(defvar *debugger-level* 0 "How many debugger loops are active on this thread.")
+(defvar *outer-restarts* '() "The restarts that already existed when the evaluation started; never offered.")
+(defvar *debugger-abort* nil "While a debugger loop runs on this thread, the function that abandons its evaluation.")
 (defvar *inspector-stack* '() "Objects being inspected, innermost first, each as (object . parts).")
 (defconstant +inspector-limit+ 200 "Elements shown of a sequence or hash table.")
 
@@ -92,7 +100,7 @@
   #+abcl (java:jcall "close" server)
   #-(or sbcl ecl ccl abcl) server)
 
-;;; ------------------------------------------------------------------ printing
+;;; ------------------------------------------------------------------ reading and printing
 
 (defun strip-packages (x)
   "Replace symbols foreign to CL with uninterned copies so arglists print without package prefixes."
@@ -233,6 +241,17 @@
                    (progn (when space (write-char #\Space out) (setf space nil))
                           (write-char ch out)))))))
 
+(defun read-request (stream)
+  "The next request form, :EOF at end of input, or (:%unreadable message) after a reader error."
+  (handler-case
+      (let ((*read-eval* nil) (*package* (find-package :moro-backend)))
+        (read stream nil :eof))
+    (end-of-file () :eof)
+    (error (e)
+      ;; The stream position after a reader error is anybody's guess: drop what is buffered.
+      (ignore-errors (clear-input stream))
+      (list :%unreadable (one-line (handler-case (princ-to-string e) (error () "unreadable request")))))))
+
 ;;; ------------------------------------------------------------------ evaluation
 
 (defun safe-prin1 (object &optional (package (find-package :cl-user)))
@@ -270,49 +289,6 @@
                #+ccl (let ((frames (ccl:backtrace-as-list))) (subseq frames 0 (min 40 (length frames))))
                #-(or sbcl ccl) nil))
     (error () nil)))
-
-(defun evaluate-text (text package-name)
-  "Evaluate every form of TEXT in PACKAGE-NAME, as a REPL would but with the
-   streams captured. Returns (:ok :values (...) :output \"...\" :package \"...\")
-   or (:error message :output \"...\" :backtrace (...)). Errors, BREAK and
-   interrupts never reach a debugger: this thread has nobody to talk to."
-  (let* ((package (or (find-package* package-name) (find-package :cl-user)))
-         (output (make-string-output-stream))
-         (values '())
-         (message nil)
-         (backtrace nil))
-    (flet ((abort-with (condition)
-             (setf message (one-line (handler-case (princ-to-string condition) (error () "error")))
-                   backtrace (capture-backtrace))
-             (throw 'moro-eval-abort nil)))
-      (setf *eval-thread* (current-thread))
-      (unwind-protect
-           (catch 'moro-eval-abort
-             (let ((*package* package)
-                   (*standard-output* output) (*error-output* output) (*trace-output* output)
-                   (*standard-input* (make-string-input-stream ""))
-                   (*debugger-hook* (lambda (condition hook) (declare (ignore hook)) (abort-with condition)))
-                   #+sbcl (sb-ext:*invoke-debugger-hook* (lambda (condition hook) (declare (ignore hook)) (abort-with condition))))
-               (handler-bind ((error #'abort-with)
-                              (warning (lambda (condition)
-                                         (format output "~&;; ~A~%" (one-line (princ-to-string condition)))
-                                         (muffle-warning condition))))
-                 (with-input-from-string (in text)
-                   (loop for form = (read in nil in)
-                         until (eq form in)
-                         do (setf values (multiple-value-list (eval form))))))))
-        (setf *eval-thread* nil)))
-    (if message
-        (list :error message :output (get-output-stream-string output) :backtrace backtrace)
-        (list :ok :values (mapcar (lambda (value) (safe-prin1 value package)) values)
-                  :output (get-output-stream-string output)
-                  :package (package-name package)))))
-
-(defun interrupt-evaluation ()
-  (let ((thread *eval-thread*))
-    (when thread
-      (interrupt-thread thread (lambda () (error "Interrupted from the editor")))
-      t)))
 
 ;;; ------------------------------------------------------------------ inspector
 
@@ -426,6 +402,187 @@
   (pop *inspector-stack*)
   (inspector-view))
 
+;;; ------------------------------------------------------------------ debugger
+
+#+sbcl
+(defun frame-text (frame)
+  (handler-case
+      (one-line (with-output-to-string (out)
+                  (let ((*print-length* 20) (*print-level* 4) (*print-pretty* nil) (*package* (find-package :cl-user)))
+                    (sb-debug::print-frame-call frame out))))
+    (error () (one-line (safe-prin1 frame)))))
+
+(defun capture-frames ()
+  "The frames of this thread as (frame-object . text), innermost first, without the machinery.
+   SB-DEBUG and SB-DI internals are named with two colons: they exist in every
+   supported SBCL but are exported only by recent releases (2.2.9 keeps
+   MAP-BACKTRACE internal)."
+  #+sbcl
+  (let ((frames '()))
+    (handler-case (sb-debug::map-backtrace (lambda (frame) (push (cons frame (frame-text frame)) frames)) :count 80)
+      (error () nil))
+    (setf frames (nreverse frames))
+    (let ((end (position-if (lambda (entry) (search "MORO-BACKEND::EVALUATE-TEXT" (cdr entry))) frames :from-end t)))
+      (remove-if (lambda (entry) (noise-frame-p (cdr entry))) (subseq frames 0 (or end (length frames))))))
+  #-sbcl
+  (mapcar (lambda (text) (cons nil text)) (capture-backtrace)))
+
+(defun frame-variables (frame)
+  "The variables of FRAME as (name . value), value :%unavailable when the compiler kept no trace of it."
+  #+sbcl
+  (handler-case
+      (let* ((debug-fun (sb-di::frame-debug-fun frame))
+             (location (sb-di::frame-code-location frame))
+             (vars (sb-di::debug-fun-debug-vars debug-fun)))
+        (when vars
+          (loop for var across vars
+                collect (cons (string-downcase (symbol-name (sb-di::debug-var-symbol var)))
+                              (if (eq (sb-di::debug-var-validity var location) :valid)
+                                  (sb-di::debug-var-value var frame)
+                                  :%unavailable)))))
+    (error () nil))
+  #-sbcl (progn frame nil))
+
+(defun frame-locals (frame)
+  (loop for (name . value) in (frame-variables frame)
+        collect (list name (if (eq value :%unavailable) "#<not available>" (safe-prin1 value)))))
+
+(defun debug-event (condition restarts frames)
+  (list :debug
+        :level *debugger-level*
+        :condition (one-line (handler-case (princ-to-string condition) (error () "condition")))
+        :type (safe-prin1 (type-of condition))
+        :restarts (loop for restart in restarts
+                        for index from 0
+                        collect (list index
+                                      (string (or (restart-name restart) ""))
+                                      (one-line (handler-case (princ-to-string restart) (error () "")))))
+        :frames (loop for (nil . text) in frames for index from 0 collect (list index text))))
+
+(defun pick (index list)
+  "The INDEXth element of LIST when INDEX is a valid index, else NIL."
+  (and (integerp index) (<= 0 index) (nth index list)))
+
+(defun read-arguments (texts package)
+  "Evaluate the value forms a restart was given, in PACKAGE."
+  (let ((*package* package))
+    (loop for text in texts collect (eval (read-from-string (string text))))))
+
+(defun evaluation-restarts (condition)
+  "The restarts for CONDITION established by the evaluation itself, innermost first:
+   those below it would unwind the connection thread or exit the image."
+  (let* ((all (compute-restarts condition))
+         (end (and *outer-restarts* (position (first *outer-restarts*) all))))
+    (if end (subseq all 0 end) all)))
+
+(defun debug-condition (condition stream package abort)
+  "Tell the client about CONDITION, then obey its debugger commands until a
+   restart transfers control (the evaluation goes on) or ABORT unwinds it."
+  (let* ((*debugger-level* (1+ *debugger-level*))
+         (restarts (evaluation-restarts condition))
+         (frames (capture-frames))
+         (*debugger-abort* (lambda () (funcall abort condition frames))))
+    (write-response (debug-event condition restarts frames) stream)
+    (loop
+      (let ((command (read-request stream)))
+        (cond
+          ((eq command :eof) (funcall abort condition frames))
+          ((not (consp command)) (write-response (list :debugger-error "bad command") stream))
+          (t
+           (handler-case
+               (case (first command)
+                 (:invoke-restart
+                  (let ((restart (pick (second command) restarts)))
+                    (if restart
+                        (apply #'invoke-restart restart (read-arguments (cddr command) package))
+                        (write-response (list :debugger-error "no such restart") stream))))
+                 (:abort (funcall abort condition frames))
+                 (:frame-locals
+                  (let ((entry (pick (second command) frames)))
+                    (write-response (list :debugger-ok (if (and entry (car entry)) (frame-locals (car entry)) nil)) stream)))
+                 (:inspect-condition
+                  (write-response (list :debugger-ok (inspect-object condition)) stream))
+                 (:inspect-local
+                  (let* ((entry (pick (second command) frames))
+                         (variables (and entry (car entry) (frame-variables (car entry))))
+                         (variable (pick (third command) variables)))
+                    (write-response
+                     (if (and variable (not (eq (cdr variable) :%unavailable)))
+                         (list :debugger-ok (inspect-object (cdr variable)))
+                         (list :debugger-error "no such local"))
+                     stream)))
+                 (t (write-response (list :debugger-error (format nil "unknown debugger command ~S" (first command))) stream)))
+             (error (e)
+               (write-response (list :debugger-error (one-line (handler-case (princ-to-string e) (error () "error")))) stream)))))))))
+
+;;; ------------------------------------------------------------------ evaluation (needs the debugger and the inspector)
+
+(defun evaluate-text (text package-name &key debugger stream)
+  "Evaluate every form of TEXT in PACKAGE-NAME, as a REPL would but with the
+   streams captured. Returns (:ok :values (...) :output \"...\" :package \"...\")
+   or (:error message :output \"...\" :backtrace (...) [:aborted t]).
+   Without DEBUGGER, errors, BREAK and interrupts abandon the evaluation and
+   come back with a backtrace. With DEBUGGER (and the client STREAM), they open
+   a debugger loop on this thread instead: the client picks a restart, which
+   resumes the evaluation, or aborts it."
+  (let* ((package (or (find-package* package-name) (find-package :cl-user)))
+         (output (make-string-output-stream))
+         (values '())
+         (message nil)
+         (backtrace nil)
+         (aborted nil))
+    (flet ((abort-with (condition)
+             (setf message (one-line (handler-case (princ-to-string condition) (error () "error")))
+                   backtrace (capture-backtrace))
+             (throw 'moro-eval-abort nil))
+           (abort-from-debugger (condition frames)
+             (setf message (format nil "~A (aborted)" (one-line (handler-case (princ-to-string condition) (error () "error"))))
+                   backtrace (mapcar #'cdr frames)
+                   aborted t)
+             (throw 'moro-eval-abort nil)))
+      (let ((handle (if (and debugger stream)
+                        (lambda (condition) (debug-condition condition stream package #'abort-from-debugger))
+                        #'abort-with)))
+        (setf *eval-thread* (current-thread))
+        (unwind-protect
+             (catch 'moro-eval-abort
+               (let ((*outer-restarts* (compute-restarts))
+                     (*package* package)
+                     (*standard-output* output) (*error-output* output) (*trace-output* output)
+                     (*standard-input* (make-string-input-stream ""))
+                     (*debugger-hook* (lambda (condition hook) (declare (ignore hook)) (funcall handle condition)))
+                     #+sbcl (sb-ext:*invoke-debugger-hook* (lambda (condition hook) (declare (ignore hook)) (funcall handle condition))))
+                 (restart-case
+                     (handler-bind ((error handle)
+                                    (warning (lambda (condition)
+                                               (format output "~&;; ~A~%" (one-line (princ-to-string condition)))
+                                               (muffle-warning condition))))
+                       (with-input-from-string (in text)
+                         (loop for form = (read in nil in)
+                               until (eq form in)
+                               do (setf values (multiple-value-list (eval form))))))
+                   (abort ()
+                     :report "Return to the editor, abandoning the evaluation"
+                     (setf message (or message "Aborted") aborted t)))))
+          (setf *eval-thread* nil))))
+    (if message
+        (append (list :error message :output (get-output-stream-string output) :backtrace backtrace)
+                (and aborted (list :aborted t)))
+        (list :ok :values (mapcar (lambda (value) (safe-prin1 value package)) values)
+                  :output (get-output-stream-string output)
+                  :package (package-name package)))))
+
+(defun interrupt-evaluation ()
+  "Stop the running evaluation: an error with a backtrace while it computes, a plain abort while it waits in the debugger."
+  (let ((thread *eval-thread*))
+    (when thread
+      (interrupt-thread thread (lambda ()
+                                 (let ((abort *debugger-abort*))
+                                   (if abort
+                                       (funcall abort)
+                                       (error "Interrupted from the editor")))))
+      t)))
+
 ;;; ------------------------------------------------------------------ protocol
 
 (defun dispatch (request)
@@ -464,28 +621,23 @@
              (list :none)
              (let ((sources (definition-sources symbol)))
                (if sources (list :ok sources) (list :none))))))
-      (:eval (evaluate-text (string (second request)) (third request)))
+      (:eval (evaluate-text (string (second request)) (third request)
+                            :debugger (getf (cdddr request) :debugger) :stream *client-stream*))
       (:interrupt (list :ok (if (interrupt-evaluation) t nil)))
       (:inspect (inspect-text (string (second request)) (third request)))
       (:inspect-part (inspect-part (second request)))
       (:inspect-pop (inspect-pop))
       (:inspect-view (inspector-view))
+      ;; Debugger commands arriving after the debugger loop ended: answered in
+      ;; kind so the client's bookkeeping stays aligned.
+      ((:invoke-restart :abort :frame-locals :inspect-condition :inspect-local)
+       (list :debugger-error "no debugger is active"))
       (t (list :error (format nil "unknown request ~S" op))))))
-
-(defun read-request (stream)
-  "The next request form, :EOF at end of input, or (:%unreadable message) after a reader error."
-  (handler-case
-      (let ((*read-eval* nil) (*package* (find-package :moro-backend)))
-        (read stream nil :eof))
-    (end-of-file () :eof)
-    (error (e)
-      ;; The stream position after a reader error is anybody's guess: drop what is buffered.
-      (ignore-errors (clear-input stream))
-      (list :%unreadable (one-line (handler-case (princ-to-string e) (error () "unreadable request")))))))
 
 (defun serve (stream)
   (unwind-protect
-       (let ((first (read-line stream nil nil)))
+       (let ((first (read-line stream nil nil))
+             (*client-stream* stream))
          (if (and first *token* (string= (string-trim '(#\Return #\Space #\Newline) first) *token*))
              (loop for request = (read-request stream)
                    until (eq request :eof)

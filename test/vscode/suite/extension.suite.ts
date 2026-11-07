@@ -172,3 +172,33 @@ test('the REPL started with the backend answers hovers from the live image (sbcl
   assert.match(expansion.document.getText(), /\(PROGN \(BAR\) \(BAZ\)\)/);
   await vscode.commands.executeCommand('moro.repl.stop');
 }, { skip: !hasSbcl });
+
+test('an error in the image opens the debugger panel and Interrupt Evaluation aborts it (sbcl)', async () => {
+  await vscode.workspace.getConfiguration('moro.repl').update('command', 'sbcl', vscode.ConfigurationTarget.Global);
+  await vscode.commands.executeCommand('moro.repl.start');
+  await waitFor(() => vscode.window.terminals.find((t) => t.name === 'moro REPL'), 10000, 'the REPL terminal');
+  const probe = await vscode.workspace.openTextDocument({ language: 'commonlisp', content: '(in-package #:cl-user)\n(sb-ext:posix-getenv "HOME")\n' });
+  await vscode.window.showTextDocument(probe);
+  await waitFor(
+    async () => /live image/.test(hoverText(await vscode.commands.executeCommand<vscode.Hover[]>('vscode.executeHoverProvider', probe.uri, new vscode.Position(1, 10)))),
+    60000,
+    'the live image to be connected',
+  );
+
+  const failing = await vscode.workspace.openTextDocument({ language: 'commonlisp', content: '(in-package #:cl-user)\n(error "boom from the test")\n' });
+  const editor = await vscode.window.showTextDocument(failing);
+  editor.selection = new vscode.Selection(new vscode.Position(1, 3), new vscode.Position(1, 3));
+  const debuggerTab = () =>
+    vscode.window.tabGroups.all
+      .flatMap((group) => group.tabs)
+      .map((tab) => tab.label)
+      .find((label) => label.startsWith('moro debugger'));
+  // The evaluation does not finish until a restart is chosen or it is aborted, so it is not awaited here.
+  const evaluation = vscode.commands.executeCommand('moro.repl.evalTopLevelForm');
+  const label = await waitFor(debuggerTab, 30000, 'the debugger panel');
+  assert.match(label, /SIMPLE-ERROR/);
+  await vscode.commands.executeCommand('moro.repl.interrupt');
+  await waitFor(() => !debuggerTab(), 15000, 'the debugger panel to close');
+  await evaluation;
+  await vscode.commands.executeCommand('moro.repl.stop');
+}, { skip: !hasSbcl });
