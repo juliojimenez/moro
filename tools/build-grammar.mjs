@@ -371,6 +371,38 @@ const repository = {
       4: { name: 'support.function.commonlisp' },
     },
   },
+  'reader-conditional-list': {
+    // #+(or sbcl ccl) ... : the feature expression is a little language of its
+    // own, so and/or/not read as reader-conditional operators and every other
+    // symbol as a feature, however deeply nested and across lines.
+    begin: `${NOT_BEFORE}(#[+-])\\s*(\\()`,
+    beginCaptures: {
+      1: { name: 'keyword.control.reader-conditional.commonlisp' },
+      2: { name: PAREN_BEGIN },
+    },
+    end: '\\)',
+    endCaptures: { 0: { name: PAREN_END } },
+    contentName: 'meta.feature-expression.commonlisp',
+    patterns: [{ include: '#feature-expression' }],
+  },
+  'feature-expression': {
+    patterns: [
+      { include: '#comment-block' },
+      { include: '#comment-line' },
+      {
+        match: `${NOT_BEFORE_SYM}((?i:and|or|not))${NOT_AFTER}`,
+        captures: { 1: { name: 'keyword.control.reader-conditional.commonlisp' } },
+      },
+      {
+        begin: '\\(',
+        beginCaptures: { 0: { name: PAREN_BEGIN } },
+        end: '\\)',
+        endCaptures: { 0: { name: PAREN_END } },
+        patterns: [{ include: '#feature-expression' }],
+      },
+      { match: SYMBOL, name: 'constant.other.feature.commonlisp' },
+    ],
+  },
   'reader-conditional': {
     match: `${NOT_BEFORE}(#[+-])(${SYMBOL})?`,
     captures: {
@@ -391,9 +423,17 @@ const repository = {
     name: 'constant.other.keyword.commonlisp',
     match: `${NOT_BEFORE}:${SYMBOL}`,
   },
+  'symbol-escape': {
+    // a\\|b or foo\\(bar: the backslash escapes one character of a symbol
+    name: 'constant.character.escape.commonlisp',
+    match: '\\\\.',
+  },
   'escaped-symbol': {
+    // |a symbol with spaces| -- may span lines, like the reader allows
     name: 'constant.other.symbol.escaped.commonlisp',
-    match: '\\|[^|]*\\|',
+    begin: '\\|',
+    end: '\\|',
+    patterns: [{ include: '#symbol-escape' }],
   },
   'lambda-list-keyword': symbolRule(lambdaListKeywords, 'storage.modifier.lambda-list.commonlisp'),
   'constant-language': symbolRule(LANGUAGE_CONSTANTS, 'constant.language.commonlisp'),
@@ -421,8 +461,8 @@ const ORDER = [
   'definer-function', 'definer-class', 'definer-type', 'definer-struct', 'definer-variable', 'definer-constant',
   'definer-namespace', 'loop', 'paren',
   'number-radix', 'number-float', 'number-ratio', 'number-integer',
-  'uninterned-symbol', 'function-quote', 'reader-conditional', 'reader-macro', 'quote', 'keyword',
-  'escaped-symbol', 'lambda-list-keyword', 'constant-language',
+  'uninterned-symbol', 'function-quote', 'reader-conditional-list', 'reader-conditional', 'reader-macro', 'quote', 'keyword',
+  'symbol-escape', 'escaped-symbol', 'lambda-list-keyword', 'constant-language',
   'head-declaration', 'head-control', 'head-function', 'package-prefix',
   'type', 'function', 'variable', 'constant',
 ];

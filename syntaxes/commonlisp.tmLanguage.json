@@ -76,6 +76,9 @@
       "include": "#function-quote"
     },
     {
+      "include": "#reader-conditional-list"
+    },
+    {
       "include": "#reader-conditional"
     },
     {
@@ -86,6 +89,9 @@
     },
     {
       "include": "#keyword"
+    },
+    {
+      "include": "#symbol-escape"
     },
     {
       "include": "#escaped-symbol"
@@ -513,6 +519,29 @@
         }
       }
     },
+    "reader-conditional-list": {
+      "begin": "(?<![^\\s()\"';`,])(#[+-])\\s*(\\()",
+      "beginCaptures": {
+        "1": {
+          "name": "keyword.control.reader-conditional.commonlisp"
+        },
+        "2": {
+          "name": "punctuation.section.parens.begin.commonlisp"
+        }
+      },
+      "end": "\\)",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.section.parens.end.commonlisp"
+        }
+      },
+      "contentName": "meta.feature-expression.commonlisp",
+      "patterns": [
+        {
+          "include": "#feature-expression"
+        }
+      ]
+    },
     "reader-conditional": {
       "match": "(?<![^\\s()\"';`,])(#[+-])([^\\s()\"';`,]+)?",
       "captures": {
@@ -536,9 +565,19 @@
       "name": "constant.other.keyword.commonlisp",
       "match": "(?<![^\\s()\"';`,]):[^\\s()\"';`,]+"
     },
+    "symbol-escape": {
+      "name": "constant.character.escape.commonlisp",
+      "match": "\\\\."
+    },
     "escaped-symbol": {
       "name": "constant.other.symbol.escaped.commonlisp",
-      "match": "\\|[^|]*\\|"
+      "begin": "\\|",
+      "end": "\\|",
+      "patterns": [
+        {
+          "include": "#symbol-escape"
+        }
+      ]
     },
     "lambda-list-keyword": {
       "match": "(?<![^\\s()\"';`,:])((?i:&allow-other-keys|&environment|&optional|&whole|&body|&rest|&aux|&key))(?![^\\s()\"';`,])",
@@ -836,6 +875,47 @@
           "name": "keyword.control.loop.commonlisp"
         }
       }
+    },
+    "feature-expression": {
+      "patterns": [
+        {
+          "include": "#comment-block"
+        },
+        {
+          "include": "#comment-line"
+        },
+        {
+          "match": "(?<![^\\s()\"';`,:])((?i:and|or|not))(?![^\\s()\"';`,])",
+          "captures": {
+            "1": {
+              "name": "keyword.control.reader-conditional.commonlisp"
+            }
+          }
+        },
+        {
+          "begin": "\\(",
+          "beginCaptures": {
+            "0": {
+              "name": "punctuation.section.parens.begin.commonlisp"
+            }
+          },
+          "end": "\\)",
+          "endCaptures": {
+            "0": {
+              "name": "punctuation.section.parens.end.commonlisp"
+            }
+          },
+          "patterns": [
+            {
+              "include": "#feature-expression"
+            }
+          ]
+        },
+        {
+          "match": "[^\\s()\"';`,]+",
+          "name": "constant.other.feature.commonlisp"
+        }
+      ]
     },
     "name-wait-function": {
       "begin": "(?i)(?<=define-method-combination|define-compiler-macro|define-setf-expander|define-modify-macro|defgeneric|defmethod|defmacro|defsetf|defun)\\G(?=\\s*(?:;|#\\||$))",
