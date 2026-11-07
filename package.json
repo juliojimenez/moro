@@ -2,7 +2,7 @@
   "name": "moro",
   "displayName": "moro",
   "description": "Common Lisp for Visual Studio Code: syntax highlighting, a language server that indexes your code and its dependencies, a REPL for any implementation with inline evaluation, a debugger with restarts, a live-image connection and an inspector, and structural editing.",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "publisher": "juliojimenez",
   "license": "Apache-2.0",
   "author": {

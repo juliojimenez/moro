@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.1
 
 - Add ASDF System from Outside the Workspace no longer fails when the chosen `.asd` cannot be written to `moro.systems`, which happens when a moro update was applied without reloading the window and the setting is not registered yet. It explains, suggests the reload, and still offers the chosen system for loading now.
 
