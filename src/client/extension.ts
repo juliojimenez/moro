@@ -4,6 +4,7 @@
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { LanguageClient, LanguageClientOptions, ServerOptions, TransportKind } from 'vscode-languageclient/node';
+import { ImageSession } from './evaluation';
 import * as forms from './forms';
 import * as paredit from './paredit';
 import { LiveImageInfo, Repl, lispPath, lispString } from './repl';
@@ -37,6 +38,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   const repl = new Repl(context.asAbsolutePath(path.join('lisp', 'moro-backend.lisp')));
   context.subscriptions.push(repl, evalHighlight);
+  const session = new ImageSession((message) => client?.outputChannel.appendLine(`[client] ${message}`));
+  context.subscriptions.push(session);
 
   // Status bar: which image the language server is talking to.
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 50);
@@ -55,7 +58,28 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   showStatus({ connected: false });
   context.subscriptions.push(status);
   const sendImage = (info: LiveImageInfo | null) => void client?.sendNotification('moro/liveImage', info);
-  repl.onImage = sendImage;
+  let busy = false;
+  let lastStatus: LiveStatus = { connected: false };
+  const refreshStatus = () => {
+    if (busy) {
+      status.text = `$(sync~spin) moro: evaluating`;
+      status.tooltip = 'moro: evaluating in the image (Interrupt Evaluation stops it)';
+      status.show();
+    } else {
+      showStatus(lastStatus);
+    }
+  };
+  session.onBusy = (b) => {
+    busy = b;
+    refreshStatus();
+  };
+  repl.onImage = (info) => {
+    sendImage(info);
+    if (info) void session.connect(info);
+    else session.disconnect();
+  };
+  /** Whether evaluation should go through the image rather than the terminal. */
+  const useImage = () => session.connected && vscode.workspace.getConfiguration('moro.repl').get<string>('evaluateIn', 'image') === 'image';
 
   const register = (command: string, callback: (...args: unknown[]) => unknown) => {
     context.subscriptions.push(vscode.commands.registerCommand(command, callback));
@@ -83,14 +107,23 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
     const text = editor.document.getText();
     flash(editor, selection.start, selection.end);
-    await repl.evalForm(selection.text, forms.packageAt(text, selection.start), forms.inPackageTarget(selection.text));
+    const pkg = forms.packageAt(text, selection.start);
+    if (useImage()) {
+      const range = new vscode.Range(editor.document.positionAt(selection.start), editor.document.positionAt(selection.end));
+      await session.evaluate(editor, range, selection.text, pkg);
+      return;
+    }
+    await repl.evalForm(selection.text, pkg, forms.inPackageTarget(selection.text));
   };
 
   // REPL lifecycle
   register('moro.repl.start', () => repl.start());
   register('moro.repl.stop', () => repl.stop());
   register('moro.repl.restart', () => repl.restart());
-  register('moro.repl.interrupt', () => repl.interrupt());
+  register('moro.repl.interrupt', async () => {
+    if (session.connected && (await session.interrupt())) return;
+    repl.interrupt();
+  });
 
   // Evaluation
   register('moro.repl.evalTopLevelForm', async () => {
@@ -117,8 +150,35 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const editor = lispEditor();
     if (!editor) return;
     const text = editor.document.getText();
+    if (useImage()) {
+      const range = new vscode.Range(editor.document.positionAt(0), editor.document.positionAt(text.length));
+      await session.evaluate(editor, range, text, forms.packageAt(text, 0));
+      return;
+    }
     await repl.evalForm(text, null, forms.packageAt(text, text.length));
   });
+
+  register('moro.repl.inspect', async () => {
+    const editor = lispEditor();
+    if (!editor) return;
+    if (!session.connected) {
+      void vscode.window.showInformationMessage('moro: the inspector needs a REPL started with the live backend (Start REPL).');
+      return;
+    }
+    const document = editor.document;
+    const text = document.getText();
+    const selection = editor.selection.isEmpty
+      ? forms.lastFormBefore(text, document.offsetAt(editor.selection.active)) ?? forms.innermostFormAt(text, document.offsetAt(editor.selection.active))
+      : { start: document.offsetAt(editor.selection.start), end: document.offsetAt(editor.selection.end), text: document.getText(editor.selection) };
+    if (!selection) {
+      void vscode.window.showInformationMessage('moro: no form at the cursor.');
+      return;
+    }
+    flash(editor, selection.start, selection.end);
+    await session.inspect(selection.text, forms.packageAt(text, selection.start));
+  });
+
+  register('moro.repl.clearResults', () => session.clearResults());
 
   const loadFile = async (compile: boolean) => {
     const editor = lispEditor();
@@ -270,7 +330,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   });
 
   await client.start();
-  context.subscriptions.push(client.onNotification('moro/liveStatus', (live: LiveStatus) => showStatus(live)));
+  context.subscriptions.push(
+    client.onNotification('moro/liveStatus', (live: LiveStatus) => {
+      lastStatus = live;
+      refreshStatus();
+    }),
+  );
   if (repl.image) sendImage(repl.image);
 }
 

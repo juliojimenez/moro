@@ -9,7 +9,7 @@ import * as fs from 'node:fs';
 import * as net from 'node:net';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { LiveImage, lispString, nameOf, plist, stringOf } from '../src/server/live';
+import { LiveImage, decodeEvaluation, decodeInspector, lispString, nameOf, plist, stringOf } from '../src/common/live';
 import { parse } from '../src/common/reader';
 
 const BACKEND = path.resolve(__dirname, '..', '..', 'lisp', 'moro-backend.lisp');
@@ -109,6 +109,78 @@ test('definitions with character offsets (SBCL)', { skip: !hasSbcl }, async () =
   assert.ok(defs[0].file.endsWith('list.lisp'));
   assert.equal(typeof defs[0].offset, 'number');
   assert.deepEqual(await live.definitions('MY-LIVE-FN', 'CL-USER'), [], 'defined from the command line: no source');
+});
+
+test('evaluation: values, output, warnings, errors with backtraces, no debugger', { skip: !hasSbcl }, async () => {
+  const defined = await live.evaluate('(defun inner (x) (+ 1 (/ 10 x))) (defun outer (x) (list (inner x)))', 'CL-USER');
+  assert.deepEqual(defined && { ok: defined.ok, values: defined.values, package: defined.package }, { ok: true, values: ['OUTER'], package: 'COMMON-LISP-USER' });
+  const several = await live.evaluate('(values 1 "two" :three)', 'CL-USER');
+  assert.deepEqual(several?.values, ['1', '"two"', ':THREE']);
+  const printed = await live.evaluate('(progn (format t "hello~%") (warn "careful") (list 1 2))', 'CL-USER');
+  assert.equal(printed?.ok, true);
+  assert.deepEqual(printed?.values, ['(1 2)']);
+  assert.match(printed?.output ?? '', /hello\n;; careful/);
+  const nothing = await live.evaluate('(values)', 'CL-USER');
+  assert.deepEqual(nothing?.values, []);
+  const failed = await live.evaluate('(outer 0)', 'CL-USER');
+  assert.equal(failed?.ok, false);
+  assert.match(failed?.error ?? '', /DIVISION-BY-ZERO/);
+  assert.ok((failed?.backtrace.length ?? 0) > 0, 'a backtrace comes along');
+  assert.ok(failed!.backtrace.some((frame) => /INNER/.test(frame)), 'the backtrace starts at user frames');
+  assert.ok(!failed!.backtrace.some((frame) => /MORO-BACKEND/.test(frame)), 'the backend frames are trimmed');
+  const broke = await live.evaluate('(break "stop here")', 'CL-USER');
+  assert.deepEqual([broke?.ok, broke?.error], [false, 'stop here'], 'break is intercepted instead of entering the debugger');
+  const eof = await live.evaluate('(read-line)', 'CL-USER');
+  assert.equal(eof?.ok, false, 'reading from the editor has no input and fails instead of blocking');
+  const unreadable = await live.evaluate('(list 1 2', 'CL-USER');
+  assert.equal(unreadable?.ok, false);
+  assert.equal(live.connected, true, 'the connection survives all of that');
+});
+
+test('interrupting a running evaluation from a second connection', { skip: !hasSbcl }, async () => {
+  const control = new LiveImage();
+  await control.connect({ port, tokenPath });
+  const started = Date.now();
+  const slow = live.evaluate('(sleep 30)', 'CL-USER');
+  await new Promise((r) => setTimeout(r, 300));
+  assert.equal(await control.arglist('CAR', 'CL'), '(list)', 'the second connection is served while the evaluation runs');
+  assert.equal(await control.interrupt(), true);
+  const result = await slow;
+  assert.equal(result?.ok, false);
+  assert.match(result?.error ?? '', /Interrupted/);
+  assert.ok(Date.now() - started < 10000, 'the evaluation stopped early');
+  assert.deepEqual((await live.evaluate('(+ 1 2)', 'CL-USER'))?.values, ['3'], 'evaluation keeps working afterwards');
+  assert.equal(await control.interrupt(), false, 'nothing to interrupt');
+  control.disconnect();
+});
+
+test('inspector: parts, drill-down and back', { skip: !hasSbcl }, async () => {
+  await live.evaluate('(defclass pt () ((x :initform 1) (y :initform (list 1 2 3)) (z)))', 'CL-USER');
+  const top = await live.inspect("(make-instance 'pt)", 'CL-USER');
+  assert.ok(top && 'view' in top);
+  assert.equal(top.view.type, 'PT');
+  assert.equal(top.view.depth, 1);
+  assert.deepEqual(top.view.parts.map((p) => [p.label, p.value, p.expandable]), [['x', '1', false], ['y', '(1 2 3)', true], ['z', '#<unbound>', false]]);
+  const list = await live.inspectPart(1);
+  assert.ok(list && 'view' in list);
+  assert.equal(list.view.type, 'CONS');
+  assert.equal(list.view.depth, 2);
+  assert.deepEqual(list.view.parts.map((p) => p.value), ['1', '2', '3']);
+  const unbound = await live.inspectPart(5);
+  assert.ok(unbound && 'error' in unbound);
+  const back = await live.inspectPop();
+  assert.ok(back && 'view' in back && back.view.type === 'PT');
+  const table = await live.inspect('(let ((h (make-hash-table))) (setf (gethash :a h) 1) h)', 'CL-USER');
+  assert.ok(table && 'view' in table);
+  assert.deepEqual(table.view.parts.slice(0, 2).map((p) => p.label), ['count', 'test']);
+  assert.deepEqual(table.view.parts[2], { index: 2, label: ':A', value: '1', expandable: false });
+  const symbol = await live.inspect("'inner", 'CL-USER');
+  assert.ok(symbol && 'view' in symbol);
+  assert.deepEqual(symbol.view.parts.map((p) => p.label), ['name', 'package', 'value', 'function', 'plist']);
+  const failing = await live.inspect('(error "boom")', 'CL-USER');
+  assert.deepEqual(failing, { error: 'boom' });
+  assert.equal(decodeEvaluation(null), null);
+  assert.equal(decodeInspector(parse('(:none)').forms[0]), null);
 });
 
 test('packages, unknown requests and bad tokens', { skip: !hasSbcl }, async () => {

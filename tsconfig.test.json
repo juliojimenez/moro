@@ -4,5 +4,5 @@
     "noEmit": false,
     "outDir": "out"
   },
-  "include": ["src/common/**/*.ts", "src/server/**/*.ts", "src/client/paredit.ts", "src/client/forms.ts", "test/**/*.ts"]
+  "include": ["src/common/**/*.ts", "src/server/**/*.ts", "src/client/paredit.ts", "src/client/forms.ts", "src/client/results.ts", "test/**/*.ts"]
 }
