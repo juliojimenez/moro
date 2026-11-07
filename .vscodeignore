@@ -2,6 +2,7 @@
 .github/**
 src/**
 test/**
+.vscode-test/**
 tools/**
 out/**
 data/**

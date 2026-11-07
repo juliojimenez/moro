@@ -51,6 +51,10 @@ jobs:
       - name: Test
         run: npm test
 
+      - name: Extension host tests
+        if: runner.os == 'Linux' && matrix.node == 24
+        run: xvfb-run -a npm run test:vscode
+
       - name: Generated grammar is up to date
         if: runner.os == 'Linux'
         run: |

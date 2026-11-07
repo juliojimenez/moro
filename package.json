@@ -630,6 +630,7 @@
     "compile-tests": "tsc -p tsconfig.test.json",
     "test": "npm run build && npm run compile-tests && node --test \"out/test/**/*.test.js\" && npm run test:grammar",
     "test:grammar": "vscode-tmgrammar-test -g syntaxes/commonlisp.tmLanguage.json \"test/grammar/*.lisp\"",
+    "test:vscode": "npm run build && npm run compile-tests && node out/test/vscode/runTests.js",
     "grammar": "node tools/build-grammar.mjs",
     "symbols": "sbcl --script tools/gen-cl-symbols.lisp \"${CLHS_MAP:-}\" > data/cl-symbols.json",
     "package": "vsce package",
@@ -643,6 +644,7 @@
   "devDependencies": {
     "@types/node": "^22.0.0",
     "@types/vscode": "^1.91.0",
+    "@vscode/test-electron": "^3.1.0",
     "@vscode/vsce": "^4.1.0",
     "esbuild": "^0.28.2",
     "typescript": "^5.9.3",
