@@ -26,6 +26,7 @@ import { IndexedFile, WorkspaceIndex, bodyArity } from './workspace';
 interface MoroSettings {
   indentation: { specs: Record<string, number> };
   indexing: { exclude: string[]; maxFiles: number };
+  dependencies: { index: boolean; registries: string[]; maxFiles: number };
   diagnostics: { enabled: boolean };
   hover: { hyperspecUrl: string };
 }
@@ -33,7 +34,11 @@ interface MoroSettings {
 function defaultSettings(): MoroSettings {
   return {
     indentation: { specs: {} },
-    indexing: { exclude: ['**/node_modules/**', '**/.git/**', '**/quicklisp/dists/**', '**/.qlot/**', '**/.cache/**'], maxFiles: 3000 },
+    indexing: {
+      exclude: ['**/node_modules/**', '**/.git/**', '**/quicklisp/**', '**/.qlot/**', '**/ocicl/**', '**/.cache/**'],
+      maxFiles: 3000,
+    },
+    dependencies: { index: true, registries: [], maxFiles: 4000 },
     diagnostics: { enabled: true },
     hover: { hyperspecUrl: 'http://www.lispworks.com/documentation/HyperSpec/Body/' },
   };
@@ -56,6 +61,12 @@ function mergeSettings(raw: unknown): MoroSettings {
   if (isRecord(indexing)) {
     if (Array.isArray(indexing.exclude)) settings.indexing.exclude = indexing.exclude.filter((g): g is string => typeof g === 'string');
     if (typeof indexing.maxFiles === 'number') settings.indexing.maxFiles = Math.max(0, Math.floor(indexing.maxFiles));
+  }
+  const dependencies = raw.dependencies;
+  if (isRecord(dependencies)) {
+    if (typeof dependencies.index === 'boolean') settings.dependencies.index = dependencies.index;
+    if (Array.isArray(dependencies.registries)) settings.dependencies.registries = dependencies.registries.filter((g): g is string => typeof g === 'string');
+    if (typeof dependencies.maxFiles === 'number') settings.dependencies.maxFiles = Math.max(0, Math.floor(dependencies.maxFiles));
   }
   const diagnostics = raw.diagnostics;
   if (isRecord(diagnostics) && typeof diagnostics.enabled === 'boolean') settings.diagnostics.enabled = diagnostics.enabled;
@@ -135,6 +146,30 @@ async function refreshSettings(): Promise<void> {
     }
   }
   index.settings = { exclude: settings.indexing.exclude, maxFiles: settings.indexing.maxFiles };
+  index.dependencySettings = {
+    enabled: settings.dependencies.index,
+    registries: settings.dependencies.registries,
+    maxFiles: settings.dependencies.maxFiles,
+  };
+}
+
+let dependencyScanTimer: NodeJS.Timeout | undefined;
+let dependencyScanRunning: Promise<void> | null = null;
+
+/** Indexes the systems the workspace depends on; serialized, and debounced when triggered by edits. */
+function scheduleDependencyScan(delay = 0): void {
+  if (dependencyScanTimer) clearTimeout(dependencyScanTimer);
+  dependencyScanTimer = setTimeout(() => {
+    dependencyScanTimer = undefined;
+    const run = async () => {
+      try {
+        await index.scanDependencies(workspaceFolders, log);
+      } catch (error) {
+        log(`Dependency scan failed: ${String(error)}`);
+      }
+    };
+    dependencyScanRunning = (dependencyScanRunning ?? Promise.resolve()).then(run);
+  }, delay);
 }
 
 async function scanWorkspace(folders: string[]): Promise<void> {
@@ -144,6 +179,7 @@ async function scanWorkspace(folders: string[]): Promise<void> {
   } catch (error) {
     log(`Workspace scan failed: ${String(error)}`);
   }
+  scheduleDependencyScan();
 }
 
 connection.onInitialized(async () => {
@@ -190,8 +226,9 @@ function scheduleValidation(uri: string): void {
 }
 
 documents.onDidChangeContent((event) => {
-  index.update(event.document.uri, event.document.getText(), false);
+  index.update(event.document.uri, event.document.getText(), { fromDisk: false });
   scheduleValidation(event.document.uri);
+  if (event.document.uri.endsWith('.asd')) scheduleDependencyScan(2000);
 });
 
 documents.onDidClose((event) => {
@@ -206,23 +243,27 @@ documents.onDidClose((event) => {
 });
 
 connection.onDidChangeWatchedFiles((event) => {
+  let asdChanged = false;
   for (const change of event.changes) {
+    if (change.uri.endsWith('.asd') || change.uri.endsWith('ocicl.csv')) asdChanged = true;
     if (documents.get(change.uri)) continue;
     if (change.type === FileChangeType.Deleted) index.remove(change.uri);
     else void index.refreshFromDisk(change.uri);
   }
+  if (asdChanged) scheduleDependencyScan(2000);
 });
 
 connection.onDidChangeConfiguration(async () => {
   await refreshSettings();
   for (const document of documents.all()) publishDiagnostics(document.uri);
+  scheduleDependencyScan(500);
 });
 
 function fileFor(uri: string): IndexedFile | undefined {
   const file = index.get(uri);
   if (file && !file.fromDisk) return file;
   const document = documents.get(uri);
-  if (document) return index.update(uri, document.getText(), false);
+  if (document) return index.update(uri, document.getText(), { fromDisk: false });
   return file;
 }
 
@@ -356,6 +397,7 @@ connection.languages.semanticTokens.on((params) => {
 connection.onShutdown(() => {
   for (const timeout of pendingValidation.values()) clearTimeout(timeout);
   pendingValidation.clear();
+  if (dependencyScanTimer) clearTimeout(dependencyScanTimer);
 });
 
 documents.listen(connection);

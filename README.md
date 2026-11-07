@@ -16,6 +16,7 @@ Common Lisp for Visual Studio Code: syntax highlighting, a language server, a RE
 
 - Outline and workspace symbols for `defun`, `defmacro`, `defgeneric`, `defmethod` (with qualifiers and specializers), `defvar`, `defparameter`, `defconstant`, `defclass` (slots and accessors), `defstruct` (slots, accessors, constructor, predicate, copier), `define-condition`, `deftype`, `defpackage`, `defsystem` and any other `def...` macro.
 - Go to definition, find references, rename and highlight occurrences across the workspace, package-aware.
+- Dependencies are indexed too: the systems your `.asd` files depend on (and anything you `ql:quickload` or `asdf:load-system`) are resolved transitively through `ocicl.csv`/`ocicl/`, `.qlot/`, Quicklisp, Roswell, `~/common-lisp`, the ASDF source-registry configuration and `CL_SOURCE_REGISTRY`. Their exported symbols appear in completion, every definition has hover and signature help, and go to definition opens the library source. Rename never edits them.
 - Hover and signature help with the lambda list and docstring, for your definitions and for every standard symbol (arglists and docstrings extracted from SBCL, with a link to the HyperSpec page).
 - Completion of standard symbols, workspace definitions, local variables and parameters in scope, keywords, package-qualified names (`pkg:`), LOOP keywords inside `loop`, and lambda-list keywords.
 - Semantic highlighting of definition names, parameters, local variables, calls to your own functions and macros, and symbols used as types (`handler-case` and `typecase` clauses, declarations, `the`, `check-type`, quoted type arguments, method specializers, slot types, LOOP `of-type`).
@@ -58,8 +59,11 @@ Every command is also in the command palette under the **moro** category and in 
 | `moro.repl.systemLoader` | `asdf` | `asdf` uses `asdf:load-system`, `quicklisp` uses `ql:quickload`. |
 | `moro.repl.revealOnEval` | `true` | Show the REPL terminal when something is sent to it. |
 | `moro.indentation.specs` | `{}` | Operator name to number of distinguished arguments, like Emacs `lisp-indent-function`. |
-| `moro.indexing.exclude` | node_modules, .git, quicklisp dists, .qlot, .cache | Globs the workspace index skips. |
+| `moro.indexing.exclude` | node_modules, .git, quicklisp, .qlot, ocicl, .cache | Globs the workspace index skips; library directories are left to the dependency scan. |
 | `moro.indexing.maxFiles` | `3000` | Maximum number of files indexed per workspace. |
+| `moro.dependencies.index` | `true` | Index the ASDF systems the workspace depends on. |
+| `moro.dependencies.registries` | `[]` | Extra directories searched for `.asd` files, before the standard registries. |
+| `moro.dependencies.maxFiles` | `4000` | Maximum number of dependency files indexed. |
 | `moro.diagnostics.enabled` | `true` | Structural diagnostics. |
 | `moro.hover.hyperspecUrl` | lispworks.com | Base URL for HyperSpec links; point it at a local mirror if you have one. |
 
@@ -67,7 +71,7 @@ The extension sets `editor.formatOnType`, two-space indentation and turns off wo
 
 ## How it works
 
-The extension ships a TypeScript language server with an error-tolerant Common Lisp reader. It parses every `.lisp`, `.lsp`, `.cl`, `.asd` and `.ros` file in the workspace, extracts definitions and symbol occurrences, tracks `in-package`, and answers editor requests from that index. Standard symbol information comes from `data/cl-symbols.json`, generated with `tools/gen-cl-symbols.lisp` by introspecting SBCL and the HyperSpec symbol map; the TextMate grammar is generated from the same data by `tools/build-grammar.mjs`.
+The extension ships a TypeScript language server with an error-tolerant Common Lisp reader. It parses every `.lisp`, `.lsp`, `.cl`, `.asd` and `.ros` file in the workspace, extracts definitions and symbol occurrences, tracks `in-package`, and answers editor requests from that index. It then reads the workspace's `.asd` files and `ql:quickload` calls, resolves the dependency systems through the registries on your machine, and indexes their sources as read-only dependencies. Standard symbol information comes from `data/cl-symbols.json`, generated with `tools/gen-cl-symbols.lisp` by introspecting SBCL and the HyperSpec symbol map; the TextMate grammar is generated from the same data by `tools/build-grammar.mjs`.
 
 The REPL is a plain terminal, so anything your implementation prints is shown as is and the debugger works exactly as it does in a shell.
 
@@ -75,7 +79,7 @@ The REPL is a plain terminal, so anything your implementation prints is shown as
 
 Each one is tracked as an issue; fix sketches are in the issue bodies.
 
-- The server has no live image: completion, hover and signature help know the standard library and what is written in the workspace, not what is loaded in your REPL ([#6](https://github.com/juliojimenez/moro/issues/6)). Macroexpansion, describe and apropos go through the REPL for that reason.
+- The server has no live image: completion, hover and signature help know the standard library, the workspace and its dependencies' sources, not what is loaded in your REPL ([#6](https://github.com/juliojimenez/moro/issues/6)). Macroexpansion, describe and apropos go through the REPL for that reason.
 - The REPL is a terminal: there is no inspector, no debugger UI and no return-value capture beyond what the implementation prints ([#7](https://github.com/juliojimenez/moro/issues/7)).
 - References and rename match symbol names across packages, and package nicknames are not resolved ([#8](https://github.com/juliojimenez/moro/issues/8)).
 - Highlighting: type positions, definition names and superclass lists are colored by the language server, so they look right only while it is running; a `loop` whose `(` ends the previous line gets no LOOP keyword coloring.

@@ -155,7 +155,15 @@ before(async () => {
   workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'moro-e2e-'));
   fs.writeFileSync(path.join(workspace, 'demo.lisp'), DEMO);
   fs.writeFileSync(path.join(workspace, 'other.lisp'), '(in-package #:demo)\n(defun helper () (greet "x"))\n');
-  fs.writeFileSync(path.join(workspace, 'demo.asd'), '(defsystem "demo" :components ((:file "demo")))\n');
+  fs.writeFileSync(path.join(workspace, 'demo.asd'), '(defsystem "demo" :depends-on ("greetlib") :components ((:file "demo")))\n');
+  // A dependency in a project-local ocicl registry: indexed as a dependency, not as workspace code.
+  fs.writeFileSync(path.join(workspace, 'ocicl.csv'), 'greetlib, ghcr.io/ocicl/greetlib@sha256:0, greetlib-1/greetlib.asd\n');
+  fs.mkdirSync(path.join(workspace, 'ocicl', 'greetlib-1'), { recursive: true });
+  fs.writeFileSync(path.join(workspace, 'ocicl', 'greetlib-1', 'greetlib.asd'), '(defsystem "greetlib" :components ((:file "greetlib")))\n');
+  fs.writeFileSync(
+    path.join(workspace, 'ocicl', 'greetlib-1', 'greetlib.lisp'),
+    '(defpackage #:greetlib (:use #:cl) (:export #:shout))\n(in-package #:greetlib)\n(defun shout (text &optional (bang "!"))\n  "Upcase TEXT and add BANG."\n  (concatenate \'string (string-upcase text) bang))\n(defun helper-not-exported () nil)\n',
+  );
   demoUri = pathToFileURL(path.join(workspace, 'demo.lisp')).toString();
   proc = spawn(process.execPath, [SERVER, '--stdio'], { stdio: ['pipe', 'pipe', 'pipe'] });
   client = new LspClient(proc);
@@ -172,7 +180,7 @@ before(async () => {
   tokenModifiers = legend.tokenModifiers;
   client.notify('initialized', {});
   client.notify('textDocument/didOpen', { textDocument: { uri: demoUri, languageId: 'commonlisp', version: 1, text: DEMO } });
-  await new Promise((r) => setTimeout(r, 400)); // let the workspace scan finish
+  await new Promise((r) => setTimeout(r, 800)); // let the workspace and dependency scans finish
 });
 
 after(async () => {
@@ -295,6 +303,31 @@ test('folding, selection ranges and semantic tokens', async () => {
   const pkgDef = at('(defpackage #:demo', 14);
   assert.equal(pkgDef?.type, 'namespace');
   assert.equal(pkgDef?.length, 'demo'.length, 'the #: prefix is not part of the name token');
+});
+
+test('dependency systems: hover, definition and completion, but no rename', async () => {
+  const uri = pathToFileURL(path.join(workspace, 'uses.lisp')).toString();
+  const text = '(in-package #:demo)\n(defun loud () (greetlib:shout "hi"))\n';
+  client.notify('textDocument/didOpen', { textDocument: { uri, languageId: 'commonlisp', version: 1, text } });
+  const shout = { line: 1, character: 27 };
+  const hover = await client.request<{ contents: { value: string } }>('textDocument/hover', { textDocument: { uri }, position: shout });
+  assert.match(hover.contents.value, /\(shout text &optional \(bang "!"\)\)/);
+  assert.match(hover.contents.value, /Upcase TEXT and add BANG\./);
+  assert.match(hover.contents.value, /greetlib\.lisp:3 \(dependency\)/);
+  const links = await client.request<Array<{ targetUri: string }>>('textDocument/definition', { textDocument: { uri }, position: shout });
+  assert.equal(links.length, 1);
+  assert.ok(links[0].targetUri.endsWith('/ocicl/greetlib-1/greetlib.lisp'));
+  const completion = await client.request<{ items: Array<{ label: string; sortText?: string }> }>('textDocument/completion', {
+    textDocument: { uri },
+    position: { line: 1, character: 15 },
+  });
+  const labels = new Set(completion.items.map((i) => i.label));
+  assert.ok(labels.has('shout'), 'exported dependency symbol is offered');
+  assert.ok(!labels.has('helper-not-exported'), 'internal dependency symbol is not offered');
+  assert.ok(completion.items.find((i) => i.label === 'shout')!.sortText!.startsWith('3'), 'dependencies sort after workspace and standard symbols');
+  const edit = await client.request<{ changes: Record<string, unknown[]> }>('textDocument/rename', { textDocument: { uri }, position: shout, newName: 'yell' });
+  const changed = Object.keys(edit.changes);
+  assert.deepEqual(changed, [uri], 'rename edits the workspace file only, never the library');
 });
 
 test('diagnostics for broken structure and formatting', async () => {

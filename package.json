@@ -222,17 +222,37 @@
           "default": [
             "**/node_modules/**",
             "**/.git/**",
-            "**/quicklisp/dists/**",
+            "**/quicklisp/**",
             "**/.qlot/**",
+            "**/ocicl/**",
             "**/.cache/**"
           ],
-          "description": "Glob patterns for files and folders the workspace index skips."
+          "markdownDescription": "Glob patterns for files and folders the workspace index skips. Library directories (`quicklisp/`, `.qlot/`, `ocicl/`) are excluded here and indexed by the dependency scan instead."
         },
         "moro.indexing.maxFiles": {
           "type": "integer",
           "default": 3000,
           "minimum": 0,
           "description": "Maximum number of Lisp files indexed per workspace."
+        },
+        "moro.dependencies.index": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Index the ASDF systems the workspace depends on (`:depends-on` in its `.asd` files plus `ql:quickload` / `asdf:load-system` calls), resolved transitively through `ocicl.csv` and `ocicl/`, `.qlot/`, Quicklisp, Roswell, `~/common-lisp`, the ASDF source-registry configuration and `CL_SOURCE_REGISTRY`. Dependency files give completion (exported symbols), hover, signature help and go to definition; rename never edits them."
+        },
+        "moro.dependencies.registries": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Extra directories searched (recursively, four levels deep) for .asd files, before the standard registries."
+        },
+        "moro.dependencies.maxFiles": {
+          "type": "integer",
+          "default": 4000,
+          "minimum": 0,
+          "description": "Maximum number of dependency files indexed."
         },
         "moro.diagnostics.enabled": {
           "type": "boolean",
