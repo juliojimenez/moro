@@ -372,12 +372,12 @@ connection.onReferences((params) => {
 
 connection.onDocumentHighlight((params) => {
   const file = fileFor(params.textDocument.uri);
-  return file ? providers.documentHighlights(file, params.position) : null;
+  return file ? providers.documentHighlights(ctx, file, params.position) : null;
 });
 
 connection.onPrepareRename((params) => {
   const file = fileFor(params.textDocument.uri);
-  return file ? providers.prepareRename(file, params.position) : null;
+  return file ? providers.prepareRename(ctx, file, params.position) : null;
 });
 
 connection.onRenameRequest((params) => {
