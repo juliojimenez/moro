@@ -1,7 +1,7 @@
 {
   "name": "moro",
   "displayName": "moro",
-  "description": "Common Lisp for Visual Studio Code: syntax highlighting, language server, REPL integration and structural editing.",
+  "description": "Common Lisp for Visual Studio Code: syntax highlighting, a language server that indexes your code and its dependencies, a REPL for any implementation with inline evaluation, a live-image connection and an inspector, and structural editing.",
   "version": "0.2.0",
   "publisher": "juliojimenez",
   "license": "Apache-2.0",
@@ -36,7 +36,9 @@
     "sbcl",
     "repl",
     "language server",
-    "asdf"
+    "asdf",
+    "quicklisp",
+    "inspector"
   ],
   "main": "./dist/extension.js",
   "activationEvents": [

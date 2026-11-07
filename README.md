@@ -1,6 +1,16 @@
 # moro
 
-Common Lisp for Visual Studio Code: syntax highlighting, a language server, a REPL that works with any implementation, and structural editing. No Lisp-side dependencies: the language server is bundled with the extension and understands your code without a running image.
+Common Lisp for Visual Studio Code. Syntax highlighting, a language server that understands your code and its dependencies without a running image, a REPL for any implementation and, while the REPL runs, a connection into the image: evaluation with inline results, completion and documentation for whatever is loaded, and an inspector.
+
+Nothing to install on the Lisp side. The language server is bundled with the extension, and the REPL backend is a single dependency-free Lisp file the extension loads into your REPL.
+
+## Getting started
+
+1. Install `juliojimenez.moro` from the Marketplace or Open VSX. Editing, navigation and documentation work on their own.
+2. For the REPL, have an implementation on your `PATH`: SBCL, Roswell, Clozure CL, ECL, CLISP and ABCL are detected automatically; anything else goes in `moro.repl.command`.
+3. Open a `.lisp` file and press `Ctrl+Alt+R`. The REPL opens in a terminal, and the status bar shows the connected image once the backend answers.
+4. Put the cursor in a form and press `Ctrl+Enter`. The result appears after the form and in the **moro results** channel; errors arrive with a backtrace. `Ctrl+Alt+N` opens the inspector on the value of the form before the cursor.
+5. **Load ASDF System** in the command palette finds the systems defined in the workspace and loads one.
 
 ## Features
 
@@ -22,13 +32,14 @@ Common Lisp for Visual Studio Code: syntax highlighting, a language server, a RE
 - Semantic highlighting of definition names, parameters, local variables, calls to your own functions and macros, and symbols used as types (`handler-case` and `typecase` clauses, declarations, `the`, `check-type`, quoted type arguments, method specializers, slot types, LOOP `of-type`).
 - Diagnostics for unbalanced parentheses, unterminated strings and unterminated block comments.
 
-**REPL**
+**REPL and live image**
 
-- Runs your implementation in an integrated terminal: SBCL, Roswell, CCL, ECL, CLISP or ABCL are detected automatically, or set `moro.repl.command`.
-- Evaluate the top-level form, the selection or the form before the cursor, load or compile-and-load the file, load or test an ASDF system found in the workspace, macroexpand, describe, apropos, interrupt.
-- With the backend connected, evaluation runs in the image with its output and return values captured: the result appears after the form in the editor and in the **moro results** channel, errors come back with a backtrace instead of a debugger prompt, Interrupt Evaluation stops a running form, and **Inspect Form** opens an inspector panel where slots, elements and entries can be drilled into. Set `moro.repl.evaluateIn` to `terminal` to keep sending forms to the terminal.
-- Before evaluating, the REPL switches to the package of the closest preceding `(in-package ...)` when that package exists in the image.
+- Runs your implementation in an integrated terminal: SBCL, Roswell, CCL, ECL, CLISP or ABCL are detected automatically, or set `moro.repl.command`. The terminal is a real one: the implementation's own debugger and restarts work as in a shell.
 - The REPL starts with a small backend loaded (`lisp/moro-backend.lisp`). Through it the language server asks the running image for what the static index cannot know: completion, hover, signature help and go to definition for anything loaded in the REPL, in any package. The status bar shows which image is connected.
+- Evaluation runs in the image with its output and return values captured: the result appears after the form in the editor and in the **moro results** channel, errors come back with a backtrace instead of a debugger prompt, and Interrupt Evaluation stops a running form. Set `moro.repl.evaluateIn` to `terminal` to send forms to the terminal instead.
+- **Inspect Form** opens an inspector panel on the value of a form: slots of instances, structures and conditions, elements of lists and vectors, hash table entries, a symbol's cells, package and pathname parts, each drillable.
+- Evaluate the top-level form, the selection or the form before the cursor, or the whole buffer; load or compile-and-load the file; load or test an ASDF system found in the workspace; macroexpand, describe and apropos through the terminal.
+- Before evaluating, the REPL switches to the package of the closest preceding `(in-package ...)` when that package exists in the image.
 
 ## Keybindings
 
@@ -50,7 +61,7 @@ All bindings apply in Common Lisp editors only.
 | Raise form | `Ctrl+Alt+P` |
 | Wrap in parentheses | `Ctrl+Alt+W` |
 
-Every command is also in the command palette under the **moro** category and in the editor context menu.
+Every command is also in the command palette under the **moro** category, and the most used ones in the editor context menu. Without a default key: Stop REPL, Restart REPL, Evaluate Buffer, Load ASDF System, Test ASDF System, Macroexpand Form, Apropos, Switch REPL to File's Package, Clear Inline Results, Select Top-Level Form and Restart Language Server.
 
 ## Settings
 
@@ -72,6 +83,7 @@ Every command is also in the command palette under the **moro** category and in 
 | `moro.dependencies.maxFiles` | `4000` | Maximum number of dependency files indexed. |
 | `moro.diagnostics.enabled` | `true` | Structural diagnostics. |
 | `moro.hover.hyperspecUrl` | lispworks.com | Base URL for HyperSpec links; point it at a local mirror if you have one. |
+| `moro.trace.server` | `off` | Trace the messages between VS Code and the language server (`messages` or `verbose`) in the **moro language server** output channel. |
 
 The extension sets `editor.formatOnType`, two-space indentation and turns off word-based suggestions for Common Lisp files. In untrusted workspaces the REPL command and arguments are read from user settings only.
 
