@@ -4,9 +4,9 @@
  * interrupts over a second connection, and an inspector panel.
  */
 import * as vscode from 'vscode';
-import { LiveImage, LiveEvaluation, InspectorResult, InspectorView } from '../common/live';
+import { LiveImage, LiveEvaluation, InspectorResult, InspectorView, lispString } from '../common/live';
 import type { LiveImageInfo } from './repl';
-import { channelText, inlineText } from './results';
+import { channelText, formSummary, inlineText } from './results';
 
 export class ImageSession implements vscode.Disposable {
   /** Long-running requests: evaluation and the first inspect. */
@@ -59,23 +59,65 @@ export class ImageSession implements vscode.Disposable {
     this.control.disconnect();
   }
 
-  /** Evaluates `text` in `pkg`, decorating `range` in `editor` with the result. */
-  async evaluate(editor: vscode.TextEditor, range: vscode.Range, text: string, pkg: string | null): Promise<LiveEvaluation | null> {
+  /** Evaluates `text` in `pkg` in the image; null (after a warning) when the image did not answer. */
+  async run(text: string, pkg: string | null): Promise<LiveEvaluation | null> {
     this.setBusy(1);
     try {
       const result = await this.evaluator.evaluate(text, pkg);
       if (!result) {
         this.log('evaluation: no answer from the image');
         void vscode.window.showWarningMessage('moro: the image did not answer; the REPL may have closed.');
-        return null;
       }
-      this.channel.append(channelText(text, result));
-      if (!result.ok) this.channel.show(true);
-      this.showResult(editor, range, result);
       return result;
     } finally {
       this.setBusy(-1);
     }
+  }
+
+  /** Evaluates `text` in `pkg`, decorating `range` in `editor` with the result. */
+  async evaluate(editor: vscode.TextEditor, range: vscode.Range, text: string, pkg: string | null): Promise<LiveEvaluation | null> {
+    const result = await this.run(text, pkg);
+    if (!result) return null;
+    this.channel.append(channelText(text, result));
+    if (!result.ok) this.channel.show(true);
+    this.showResult(editor, range, result);
+    return result;
+  }
+
+  /** Macroexpands `form` with `expander` in the image and opens the expansion beside the editor. */
+  async macroexpand(expander: 'macroexpand-1' | 'macroexpand', form: string, pkg: string | null): Promise<void> {
+    const result = await this.run(`(${expander} (quote ${form}))`, pkg);
+    if (!result) return;
+    if (!result.ok) {
+      this.channel.append(channelText(`${expander} ${formSummary(form)}`, result));
+      this.channel.show(true);
+      void vscode.window.showErrorMessage(`moro: ${expander} failed: ${result.error ?? 'error'}`);
+      return;
+    }
+    const expansion = result.values[0] ?? '';
+    this.channel.append(`;; ${expander}: ${formSummary(form)}\n${expansion}\n`);
+    const document = await vscode.workspace.openTextDocument({ language: 'commonlisp', content: `${expansion}\n` });
+    await vscode.window.showTextDocument(document, { viewColumn: vscode.ViewColumn.Beside, preview: true, preserveFocus: true });
+  }
+
+  /** Runs a form whose output is the answer (describe, apropos) and shows the output in the results channel. */
+  async showOutput(heading: string, text: string, pkg: string | null): Promise<void> {
+    const result = await this.run(text, pkg);
+    if (!result) return;
+    if (!result.ok) {
+      this.channel.append(channelText(heading, result));
+    } else {
+      this.channel.append(`;; ${heading}\n${result.output.trim() ? result.output.replace(/\n$/, '') : '; nothing to show'}\n`);
+    }
+    this.channel.show(true);
+  }
+
+  describe(symbol: string, pkg: string | null): Promise<void> {
+    return this.showOutput(`describe ${symbol}`, `(describe (quote ${symbol}))`, pkg);
+  }
+
+  apropos(query: string, pkg: string | null): Promise<void> {
+    return this.showOutput(`apropos ${JSON.stringify(query)}`, `(apropos ${lispString(query)})`, pkg);
   }
 
   async interrupt(): Promise<boolean> {
