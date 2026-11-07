@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- An error in an evaluation sent to the image opens the **moro debugger** panel instead of abandoning the form: the condition, the restarts established inside the evaluation and the backtrace. A restart resumes the evaluation in the image (`use-value` and `store-value` prompt for a form; number keys choose a restart); Abort, closing the panel or Interrupt Evaluation abandon it and report the error with the backtrace. Frames expand to their local variables (SBCL), and locals and the condition open in the inspector. The status bar shows `moro: debugger` while an evaluation waits there, and new evaluations are refused until it is answered. New setting `moro.repl.debugger` (on by default) restores the plain backtrace behaviour when off. Fixes #26.
+- Fixed: Load ASDF System and Test ASDF System failed with "Package ASDF does not exist" in an image started without an init file. The forms sent now require ASDF first and name its functions without reading `asdf:` symbols; a workspace with `ocicl.csv` loads the ocicl runtime, one with `.qlot/setup.lisp` loads it, and the `quicklisp` loader loads `~/quicklisp/setup.lisp` when Quicklisp is not in the image yet.
+
 ## 0.2.2
 
 - Macroexpand, describe and apropos run through the image when the backend is connected: the expansion opens as a highlighted Common Lisp document beside the editor and is logged to the results channel; describe and apropos output appears in the results channel. The terminal remains the fallback. Fixes #24.

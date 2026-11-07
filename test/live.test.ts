@@ -9,7 +9,7 @@ import * as fs from 'node:fs';
 import * as net from 'node:net';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { LiveImage, decodeEvaluation, decodeInspector, lispString, nameOf, plist, stringOf } from '../src/common/live';
+import { DebuggerEvent, LiveEvaluation, LiveImage, decodeEvaluation, decodeInspector, lispString, nameOf, plist, stringOf } from '../src/common/live';
 import { parse } from '../src/common/reader';
 
 const BACKEND = path.resolve(__dirname, '..', '..', 'lisp', 'moro-backend.lisp');
@@ -201,6 +201,145 @@ test('inspector: parts, drill-down and back', { skip: !hasSbcl }, async () => {
   assert.deepEqual(failing, { error: 'boom' });
   assert.equal(decodeEvaluation(null), null);
   assert.equal(decodeInspector(parse('(:none)').forms[0]), null);
+});
+
+/**
+ * Starts an evaluation with the debugger and runs `body` once the first
+ * debugger event arrived. If `body` fails before the evaluation settled, the
+ * debugger is aborted so the connection is usable for the next test.
+ */
+async function inDebugger<T>(
+  text: string,
+  body: (event: DebuggerEvent, done: Promise<LiveEvaluation | null>) => Promise<T>,
+  onDebugError?: (message: string) => void,
+): Promise<T> {
+  const events: DebuggerEvent[] = [];
+  let settled = false;
+  const done = live.evaluate(text, 'CL-USER', { onDebug: (event) => events.push(event), onDebugError }).finally(() => {
+    settled = true;
+  });
+  const deadline = Date.now() + 10000;
+  while (!events.length && !settled && Date.now() < deadline) await new Promise((r) => setTimeout(r, 25));
+  try {
+    assert.ok(events.length, 'a debugger event arrived');
+    return await body(events[0], done);
+  } finally {
+    if (!settled) {
+      live.abortDebugger();
+      await done;
+    }
+  }
+}
+
+test('debugger: the event, and restarts with values resume the evaluation', { skip: !hasSbcl }, async () => {
+  await live.evaluate(
+    '(defun dbg-inner (x) (list :before (restart-case (error "boom ~a" x) (use-value (v) :report "Use a value" (* v 2))) :after)) (defun dbg-outer (x) (let ((r (dbg-inner x))) (cons :outer r)))',
+    'CL-USER',
+  );
+  assert.equal(live.debuggerActive, false);
+  const errors: string[] = [];
+  const result = await inDebugger(
+    '(dbg-outer 1)',
+    async (event, done) => {
+      assert.equal(live.debuggerActive, true);
+      assert.equal(event.level, 1);
+      assert.equal(event.condition, 'boom 1');
+      assert.equal(event.type, 'SIMPLE-ERROR');
+      assert.deepEqual(event.restarts.map((r) => [r.index, r.name]), [[0, 'USE-VALUE'], [1, 'ABORT']], "the evaluation's restarts, not the thread's");
+      assert.equal(event.restarts[0].description, 'Use a value');
+      assert.deepEqual(event.frames.map((f) => f.text), ['(DBG-INNER 1)', '(DBG-OUTER 1)']);
+      // A value form that fails to evaluate, then a bad index: the debugger stays open and reports both.
+      assert.ok(live.invokeRestart(0, ['(error "no value")']));
+      await new Promise((r) => setTimeout(r, 300));
+      assert.ok(live.invokeRestart(7));
+      await new Promise((r) => setTimeout(r, 300));
+      assert.equal(live.debuggerActive, true);
+      assert.ok(live.invokeRestart(0, ['21']));
+      return done;
+    },
+    (message) => errors.push(message),
+  );
+  assert.deepEqual(errors, ['no value', 'no such restart']);
+  assert.deepEqual(result && { ok: result.ok, values: result.values }, { ok: true, values: ['(:OUTER :BEFORE 42 :AFTER)'] });
+  assert.equal(live.debuggerActive, false);
+});
+
+test('debugger: continue, store-value and abort', { skip: !hasSbcl }, async () => {
+  const continued = await inDebugger('(progn (cerror "Go on" "stop here") :went-on)', async (event, done) => {
+    const cont = event.restarts.find((r) => r.name === 'CONTINUE');
+    assert.ok(cont, 'a CONTINUE restart');
+    assert.equal(cont.description, 'Go on');
+    live.invokeRestart(cont.index);
+    return done;
+  });
+  assert.deepEqual(continued?.values, [':WENT-ON']);
+
+  const stored = await inDebugger('(defun dbg-triple (x) (check-type x integer) (* x 3)) (dbg-triple "a")', async (event, done) => {
+    assert.match(event.condition, /INTEGER/);
+    const store = event.restarts.find((r) => r.name === 'STORE-VALUE');
+    assert.ok(store, 'a STORE-VALUE restart');
+    live.invokeRestart(store.index, ['7']);
+    return done;
+  });
+  assert.deepEqual(stored?.values, ['21']);
+
+  const aborted = await inDebugger('(error "no way out")', async (_event, done) => {
+    assert.ok(live.abortDebugger());
+    return done;
+  });
+  assert.equal(aborted?.ok, false);
+  assert.equal(aborted?.aborted, true);
+  assert.match(aborted?.error ?? '', /no way out \(aborted\)/);
+  assert.deepEqual((await live.evaluate('(+ 1 1)', 'CL-USER'))?.values, ['2'], 'evaluation works afterwards');
+});
+
+test('debugger: frame locals, inspecting a local and the condition, commands outside a debugger', { skip: !hasSbcl }, async () => {
+  // At debug 3 SBCL keeps every variable for its whole scope; at the default policy a local dead after the call shows as not available.
+  await live.evaluate('(declaim (optimize (debug 3))) (defun locals-demo (a) (let ((b (* a 2))) (error "here ~a" b)))', 'CL-USER');
+  try {
+    await inDebugger('(locals-demo 21)', async (event, done) => {
+      const frame = event.frames.find((f) => /LOCALS-DEMO/.test(f.text));
+      assert.ok(frame, `a LOCALS-DEMO frame in ${event.frames.map((f) => f.text).join(' | ')}`);
+      const locals = await live.frameLocals(frame.index);
+      const byName = new Map(locals.map((l) => [l.name, l.value]));
+      assert.equal(byName.get('a'), '21');
+      assert.equal(byName.get('b'), '42');
+      const inspected = await live.inspectLocal(frame.index, locals.findIndex((l) => l.name === 'b'));
+      assert.ok(inspected && 'view' in inspected && inspected.view.title === '42', JSON.stringify(inspected));
+      const condition = await live.inspectCondition();
+      assert.ok(condition && 'view' in condition && /SIMPLE-ERROR/.test(condition.view.type), JSON.stringify(condition));
+      assert.deepEqual(await live.frameLocals(999), []);
+      const bogus = await live.inspectLocal(frame.index, 999);
+      assert.ok(bogus && 'error' in bogus);
+      live.invokeRestart(event.restarts.findIndex((r) => r.name === 'ABORT'));
+      const result = await done;
+      assert.equal(result?.aborted, true, 'the ABORT restart abandons the evaluation');
+    });
+  } finally {
+    await live.evaluate('(declaim (optimize (debug 1)))', 'CL-USER');
+  }
+  // Outside a debugger the commands are refused locally and, if they reach the image, answered in kind.
+  assert.equal(live.debuggerActive, false);
+  assert.equal(live.abortDebugger(), false);
+  assert.equal(live.invokeRestart(0), false);
+  assert.deepEqual(await live.frameLocals(0), []);
+  assert.deepEqual((await live.evaluate('(* 6 7)', 'CL-USER'))?.values, ['42']);
+});
+
+test('debugger: interrupt while waiting aborts the evaluation', { skip: !hasSbcl }, async () => {
+  const control = new LiveImage();
+  await control.connect({ port, tokenPath });
+  try {
+    const result = await inDebugger('(error "waiting")', async (_event, done) => {
+      assert.equal(await control.interrupt(), true);
+      return done;
+    });
+    assert.equal(result?.aborted, true);
+    assert.match(result?.error ?? '', /waiting \(aborted\)/);
+    assert.deepEqual((await live.evaluate('(+ 2 2)', 'CL-USER'))?.values, ['4']);
+  } finally {
+    control.disconnect();
+  }
 });
 
 test('packages, unknown requests and bad tokens', { skip: !hasSbcl }, async () => {

@@ -230,6 +230,11 @@
           "default": true,
           "description": "Show the result of an evaluation after the form in the editor (cleared when the document changes)."
         },
+        "moro.repl.debugger": {
+          "type": "boolean",
+          "default": true,
+          "description": "When an evaluation in the image signals an error, open the debugger panel with the condition, its restarts and the backtrace. Off: report the error with a backtrace and abandon the form."
+        },
         "moro.indentation.specs": {
           "type": "object",
           "additionalProperties": {

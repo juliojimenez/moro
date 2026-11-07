@@ -51,6 +51,8 @@ export interface LiveEvaluation {
   error?: string;
   backtrace: string[];
   package?: string;
+  /** True when the evaluation was abandoned from the debugger or by an interrupt while it waited there. */
+  aborted?: boolean;
 }
 
 export interface InspectorPart {
@@ -70,11 +72,51 @@ export interface InspectorView {
 
 export type InspectorResult = { view: InspectorView } | { error: string } | null;
 
+export interface DebuggerRestart {
+  index: number;
+  name: string;
+  description: string;
+}
+
+export interface DebuggerFrame {
+  index: number;
+  text: string;
+}
+
+/** What the image reports when an evaluation signals an error and the debugger was requested. */
+export interface DebuggerEvent {
+  level: number;
+  condition: string;
+  type: string;
+  restarts: DebuggerRestart[];
+  frames: DebuggerFrame[];
+}
+
+export interface FrameLocal {
+  name: string;
+  value: string;
+}
+
+export interface EvaluateOptions {
+  /** Open the debugger on errors instead of abandoning the evaluation; called for each debugger event. */
+  onDebug?: (event: DebuggerEvent) => void;
+  /** A restart or abort sent to the debugger failed (bad index, argument form that did not evaluate); the debugger is still waiting. */
+  onDebugError?: (message: string) => void;
+}
+
 interface Pending {
   line: string;
   resolve: (node: Node | null) => void;
   timeoutMs: number;
   timer?: NodeJS.Timeout;
+  /** Receives (:debug ...) events while this request is in flight. */
+  onEvent?: (event: DebuggerEvent) => void;
+  onDebugError?: (message: string) => void;
+}
+
+interface DebuggerPending {
+  resolve: (node: Node | null) => void;
+  timer: NodeJS.Timeout;
 }
 
 const CONNECT_ATTEMPTS = 40;
@@ -125,6 +167,9 @@ export class LiveImage {
   private buffer = '';
   private queue: Pending[] = [];
   private inFlight: Pending | null = null;
+  /** Debugger commands answered with :debugger-ok / :debugger-error while an evaluation waits in the debugger. */
+  private debuggerPending: DebuggerPending[] = [];
+  private debuggerOpen = false;
   private generation = 0;
 
   /** Connects (retrying while the image starts), authenticates and reads the implementation info. */
@@ -184,6 +229,11 @@ export class LiveImage {
     return this.socket !== null && this.status.connected;
   }
 
+  /** True from a debugger event until the evaluation it belongs to is answered. */
+  get debuggerActive(): boolean {
+    return this.debuggerOpen && this.inFlight !== null;
+  }
+
   private setStatus(status: LiveStatus): void {
     this.status = status;
     this.onStatus(status);
@@ -222,8 +272,28 @@ export class LiveImage {
       const form = result.forms[0];
       if (!form || (isList(form) && !form.closed)) return;
       this.buffer = this.buffer.slice(form.end);
+      const head = isList(form) ? nameOf(form.children[0]) : null;
+      if (head === 'debug') {
+        // An event for the evaluation in flight; the evaluation itself is still pending.
+        this.debuggerOpen = true;
+        const event = decodeDebuggerEvent(form);
+        if (event && this.inFlight?.onEvent) this.inFlight.onEvent(event);
+        continue;
+      }
+      if (head === 'debugger-ok' || head === 'debugger-error') {
+        const waiting = this.debuggerPending.shift();
+        if (waiting) {
+          clearTimeout(waiting.timer);
+          waiting.resolve(form);
+        } else if (head === 'debugger-error') {
+          // The answer to a restart or abort that did not transfer control.
+          this.inFlight?.onDebugError?.((isList(form) ? stringOf(form.children[1]) : null) ?? 'debugger error');
+        }
+        continue;
+      }
       const pending = this.inFlight;
       this.inFlight = null;
+      this.debuggerOpen = false;
       if (pending) {
         if (pending.timer) clearTimeout(pending.timer);
         pending.resolve(form);
@@ -235,11 +305,39 @@ export class LiveImage {
   private failAll(): void {
     const all = this.inFlight ? [this.inFlight, ...this.queue] : [...this.queue];
     this.inFlight = null;
+    this.debuggerOpen = false;
     this.queue = [];
     for (const pending of all) {
       if (pending.timer) clearTimeout(pending.timer);
       pending.resolve(null);
     }
+    for (const waiting of this.debuggerPending) {
+      clearTimeout(waiting.timer);
+      waiting.resolve(null);
+    }
+    this.debuggerPending = [];
+  }
+
+  /** Sends a debugger command and waits for its :debugger-ok / :debugger-error answer. */
+  private debuggerRequest(line: string, timeoutMs = 10000): Promise<Node | null> {
+    if (!this.socket || !this.debuggerActive) return Promise.resolve(null);
+    const socket = this.socket;
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        const index = this.debuggerPending.findIndex((w) => w.resolve === resolve);
+        if (index >= 0) this.debuggerPending.splice(index, 1);
+        resolve(null);
+      }, timeoutMs);
+      this.debuggerPending.push({ resolve, timer });
+      socket.write(`${line}\n`);
+    });
+  }
+
+  /** Sends a debugger command that transfers control; the pending evaluation answers later. */
+  private debuggerSend(line: string): boolean {
+    if (!this.socket || !this.debuggerActive) return false;
+    this.socket.write(`${line}\n`);
+    return true;
   }
 
   private pump(): void {
@@ -262,14 +360,14 @@ export class LiveImage {
   }
 
   /** Sends one request form; resolves with the response form, or null when disconnected or timed out (0 = no timeout). */
-  request(line: string, timeoutMs = 1500): Promise<Node | null> {
+  request(line: string, timeoutMs = 1500, events: Pick<Pending, 'onEvent' | 'onDebugError'> = {}): Promise<Node | null> {
     if (!this.socket) return Promise.resolve(null);
     if (this.queue.length >= MAX_QUEUE) {
       const dropped = this.queue.shift();
       dropped?.resolve(null);
     }
     return new Promise((resolve) => {
-      this.queue.push({ line, resolve, timeoutMs });
+      this.queue.push({ line, resolve, timeoutMs, ...events });
       this.pump();
     });
   }
@@ -347,11 +445,54 @@ export class LiveImage {
     return isList(list) ? list.children.map((n) => stringOf(n)).filter((s): s is string => !!s) : [];
   }
 
-  /** Evaluates `text` in `pkg` inside the image; no timeout, use `interrupt` from another connection. */
-  async evaluate(text: string, pkg: string | null): Promise<LiveEvaluation | null> {
+  /**
+   * Evaluates `text` in `pkg` inside the image; no timeout, use `interrupt` from
+   * another connection. With `onDebug`, an error opens the debugger instead of
+   * abandoning the evaluation: the callback receives each debugger event and
+   * the promise resolves once a restart finished the evaluation or it was aborted.
+   */
+  async evaluate(text: string, pkg: string | null, options: EvaluateOptions = {}): Promise<LiveEvaluation | null> {
     if (!this.connected) return null;
-    const response = await this.request(`(:eval ${lispString(text)} ${pkg ? lispString(pkg) : 'nil'})`, 0);
+    const flag = options.onDebug ? ' :debugger t' : '';
+    const response = await this.request(`(:eval ${lispString(text)} ${pkg ? lispString(pkg) : 'nil'}${flag})`, 0, {
+      onEvent: options.onDebug,
+      onDebugError: options.onDebugError,
+    });
     return decodeEvaluation(response);
+  }
+
+  /** Debugger: invoke restart `index` with the given value forms; the evaluation then goes on or aborts. */
+  invokeRestart(index: number, argumentForms: string[] = []): boolean {
+    return this.debuggerSend(`(:invoke-restart ${Math.floor(index)}${argumentForms.map((f) => ` ${lispString(f)}`).join('')})`);
+  }
+
+  /** Debugger: abandon the evaluation waiting in the debugger. */
+  abortDebugger(): boolean {
+    return this.debuggerSend('(:abort)');
+  }
+
+  /** Debugger: the local variables of frame `index` (SBCL; empty elsewhere). */
+  async frameLocals(index: number): Promise<FrameLocal[]> {
+    const response = await this.debuggerRequest(`(:frame-locals ${Math.floor(index)})`);
+    if (!response || !isList(response) || nameOf(response.children[0]) !== 'debugger-ok') return [];
+    const list = response.children[1];
+    if (!isList(list)) return [];
+    return list.children.flatMap((entry) => {
+      if (!isList(entry)) return [];
+      const name = stringOf(entry.children[0]);
+      const value = stringOf(entry.children[1]);
+      return name !== null && value !== null ? [{ name, value }] : [];
+    });
+  }
+
+  /** Debugger: inspect the condition itself. */
+  async inspectCondition(): Promise<InspectorResult> {
+    return decodeDebuggerInspector(await this.debuggerRequest('(:inspect-condition)'));
+  }
+
+  /** Debugger: inspect local `local` of frame `frame`. */
+  async inspectLocal(frame: number, local: number): Promise<InspectorResult> {
+    return decodeDebuggerInspector(await this.debuggerRequest(`(:inspect-local ${Math.floor(frame)} ${Math.floor(local)})`));
   }
 
   /** Interrupts the evaluation running in the image, if any. */
@@ -397,9 +538,47 @@ export function decodeEvaluation(response: Node | null): LiveEvaluation | null {
       output: stringOf(fields.get('output')) ?? '',
       error: stringOf(response.children[1]) ?? 'error',
       backtrace: strings(fields.get('backtrace')),
+      aborted: nameOf(fields.get('aborted')) === 't',
     };
   }
   return null;
+}
+
+/** Decodes a (:debug ...) event. */
+export function decodeDebuggerEvent(form: Node): DebuggerEvent | null {
+  if (!isList(form) || nameOf(form.children[0]) !== 'debug') return null;
+  const fields = plist(form);
+  const level = fields.get('level');
+  const restarts = fields.get('restarts');
+  const frames = fields.get('frames');
+  return {
+    level: level && level.kind === 'number' ? Number(level.text) : 1,
+    condition: stringOf(fields.get('condition')) ?? '',
+    type: stringOf(fields.get('type')) ?? '',
+    restarts: isList(restarts)
+      ? restarts.children.flatMap((entry) => {
+          if (!isList(entry)) return [];
+          const [index, name, description] = entry.children;
+          return [{ index: index && index.kind === 'number' ? Number(index.text) : 0, name: stringOf(name) ?? '', description: stringOf(description) ?? '' }];
+        })
+      : [],
+    frames: isList(frames)
+      ? frames.children.flatMap((entry) => {
+          if (!isList(entry)) return [];
+          const [index, text] = entry.children;
+          return [{ index: index && index.kind === 'number' ? Number(index.text) : 0, text: stringOf(text) ?? '' }];
+        })
+      : [],
+  };
+}
+
+/** A (:debugger-ok <inspector view>) or (:debugger-error message) answer. */
+function decodeDebuggerInspector(response: Node | null): InspectorResult {
+  if (!response || !isList(response)) return null;
+  const tag = nameOf(response.children[0]);
+  if (tag === 'debugger-error') return { error: stringOf(response.children[1]) ?? 'error' };
+  if (tag !== 'debugger-ok') return null;
+  return decodeInspector(response.children[1] ?? null);
 }
 
 /** Decodes an inspector response (:ok view | :error message | :none). */
