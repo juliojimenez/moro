@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.2
 
 - Macroexpand, describe and apropos run through the image when the backend is connected: the expansion opens as a highlighted Common Lisp document beside the editor and is logged to the results channel; describe and apropos output appears in the results channel. The terminal remains the fallback. Fixes #24.
 - LOOP clause keywords are colored when the `(` of the loop ends the previous line. Fixes #25.
