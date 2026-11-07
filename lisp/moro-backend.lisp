@@ -338,11 +338,13 @@
     (error () "#<unprintable>")))
 
 (defparameter *backtrace-noise*
-  '("MORO-BACKEND::" "SB-KERNEL::%SIGNAL" "SB-DEBUG::" "INVOKE-DEBUGGER" "(ERROR " "(BREAK " "(WARN "
+  '("MORO-BACKEND::" "SB-KERNEL::%SIGNAL" "SB-DEBUG::" "INVOKE-DEBUGGER" "(ERROR " "(BREAK " "(WARN " "(SIGNAL "
     "SB-KERNEL::INTERNAL-ERROR" "SB-KERNEL:INTERNAL-ERROR" "SB-KERNEL:WITH-SIMPLE-CONDITION-RESTARTS"
     "SB-INT:SIMPLE-EVAL-IN-LEXENV" "SB-IMPL::%SIMPLE-EVAL" "SB-IMPL::SIMPLE-EVAL-PROGN-BODY" "SB-EVAL::" "(EVAL "
     "SB-C::%COMPILE-IN-LEXENV" "SB-C:EVAL-WITH-COMPILE-IN-LEXENV" ":IN SB-C::" "SB-C::COMPILE-TOPLEVEL"
-    "(\"top level form\")")
+    "(\"top level form\")"
+    ;; Clozure CL: its own error machinery and evaluator, and the backtrace call itself.
+    "CCL::" "(BACKTRACE-AS-LIST" "(CCL:BACKTRACE-AS-LIST" "(FUNCALL ")
   "Frames of the signalling, evaluation and compilation machinery, and of the backend itself.")
 
 (defun noise-frame-p (frame)
@@ -355,11 +357,18 @@
                           frames :from-end t)))
     (remove-if #'noise-frame-p (subseq frames 0 (or end (length frames))))))
 
+#+ccl
+(defun ccl-frame-text (frame)
+  "A CCL frame as (name args...): BACKTRACE-AS-LIST hands the arguments over already printed."
+  (if (consp frame)
+      (format nil "(~A~{ ~A~})" (safe-prin1 (first frame)) (mapcar (lambda (arg) (if (stringp arg) arg (safe-prin1 arg))) (rest frame)))
+      (safe-prin1 frame)))
+
 (defun capture-backtrace ()
   "A few frames of the current backtrace as strings, where the implementation offers them."
   (handler-case
       (trim-backtrace
-       (mapcar (lambda (frame) (one-line (safe-prin1 frame)))
+       (mapcar (lambda (frame) (one-line #+ccl (ccl-frame-text frame) #-ccl (safe-prin1 frame)))
                #+sbcl (sb-debug:list-backtrace :count 40)
                #+ccl (let ((frames (ccl:backtrace-as-list))) (subseq frames 0 (min 40 (length frames))))
                #-(or sbcl ccl) nil))

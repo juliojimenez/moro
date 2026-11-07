@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Backtraces from Clozure CL show the frames of your code only, with arguments printed plainly, instead of CCL's error machinery and evaluator frames with quoted arguments.
+- README: the getting-started steps and the known limitations describe the debugger panel and what each implementation reports.
+
 ## 0.3.0
 
 - Go to definition through the live image works on Clozure CL, ECL and ABCL as well as SBCL: the backend reads CCL's source notes, ECL's location annotations and ABCL's source property, and the language server maps each implementation's idea of a position (the start of the form, or where the reader stood before it) to the form in the file. Smoke tests run the backend on each of these implementations when it is installed; CI runs them on SBCL and ECL. Fixes #27.
