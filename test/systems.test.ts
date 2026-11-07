@@ -75,8 +75,8 @@ test('analysis records system dependencies and quickload requests', () => {
 test('source-registry configuration and environment variable', () => {
   const entries = parseSourceRegistry('(:source-registry (:tree "~/lisp/") (:directory (:home "cl")) :inherit-configuration)', '/h');
   assert.deepEqual(entries, [
-    { kind: 'tree', path: '/h/lisp/' },
-    { kind: 'directory', path: '/h/cl' },
+    { kind: 'tree', path: path.join('/h', 'lisp/') },
+    { kind: 'directory', path: path.join('/h', 'cl') },
   ]);
   assert.deepEqual(parseSourceRegistryVariable(`/a//${path.delimiter}/b/`, '/h'), [
     { kind: 'tree', path: '/a' },
@@ -87,7 +87,7 @@ test('source-registry configuration and environment variable', () => {
 
 test('registry roots come from the workspace, settings, configuration and home', () => {
   const roots = defaultRegistryRoots([workspace], { home, env: {}, extra: [path.join(root, 'nope'), path.join(home, 'quicklisp', 'local-projects')] });
-  const paths = roots.map((r) => path.relative(root, r.path));
+  const paths = roots.map((r) => path.relative(root, r.path).split(path.sep).join('/'));
   assert.deepEqual(paths, [
     'app/ocicl',
     'home/quicklisp/local-projects', // from `extra`, before the standard registries
