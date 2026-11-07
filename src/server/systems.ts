@@ -358,3 +358,56 @@ export async function collectSystemFiles(systems: SystemRecord[], maxFiles: numb
   for (const root of roots) await walk(root);
   return out;
 }
+
+/** The `.asd` files directly inside `dir`, sorted. */
+function asdFilesIn(dir: string): string[] {
+  try {
+    return fs
+      .readdirSync(dir, { withFileTypes: true })
+      .filter((d) => d.isFile() && d.name.toLowerCase().endsWith('.asd'))
+      .map((d) => path.join(dir, d.name))
+      .sort();
+  } catch {
+    return [];
+  }
+}
+
+/** A `moro.systems` entry as an existing path: absolute, `~`-prefixed, or relative to a workspace folder. */
+export function resolveConfiguredPath(entry: string, folders: string[], home: string): string | null {
+  const expanded = expandHome(entry.trim(), home);
+  if (!expanded) return null;
+  if (path.isAbsolute(expanded)) return fs.existsSync(expanded) ? expanded : null;
+  for (const folder of folders) {
+    const candidate = path.resolve(folder, expanded);
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return null;
+}
+
+/**
+ * The systems named by the `moro.systems` setting: each entry is an `.asd`
+ * file or a directory holding `.asd` files. Returns primary system name to
+ * `.asd` path, first entry winning.
+ */
+export async function configuredSystems(entries: string[], folders: string[], home = os.homedir()): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  for (const entry of entries) {
+    if (typeof entry !== 'string' || !entry.trim()) continue;
+    const resolved = resolveConfiguredPath(entry, folders, home);
+    if (!resolved) continue;
+    const files = isDirectory(resolved) ? asdFilesIn(resolved) : resolved.toLowerCase().endsWith('.asd') ? [resolved] : [];
+    for (const asd of files) {
+      let text: string;
+      try {
+        text = await fs.promises.readFile(asd, 'utf8');
+      } catch {
+        continue;
+      }
+      for (const name of systemsInFile(text).keys()) {
+        const primary = primarySystemName(name);
+        if (!out.has(primary)) out.set(primary, asd);
+      }
+    }
+  }
+  return out;
+}

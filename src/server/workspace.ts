@@ -8,16 +8,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { AtomNode, parse, ParseResult, isList, isSymbol, LAMBDA_LIST_KEYWORDS } from '../common/reader';
 import { analyze, Definition, FileAnalysis, Occurrence, packageAtOffset } from './analysis';
 import { PackageModel, ResolvedSymbol, sameSymbol } from './packages';
-import {
-  LISP_EXTENSIONS,
-  SystemRecord,
-  collectSystemFiles,
-  defaultRegistryRoots,
-  discoverSystems,
-  ociclSystems,
-  primarySystemName,
-  resolveDependencies,
-} from './systems';
+import { LISP_EXTENSIONS, SystemRecord, collectSystemFiles, configuredSystems, defaultRegistryRoots, discoverSystems, ociclSystems, primarySystemName, resolveDependencies } from './systems';
 
 export { LISP_EXTENSIONS };
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
@@ -44,6 +35,8 @@ export interface DependencySettings {
   enabled: boolean;
   registries: string[];
   maxFiles: number;
+  /** `.asd` files or directories from the `moro.systems` setting, indexed like dependencies whether or not the workspace asks for them. */
+  systems?: string[];
 }
 
 export interface FoundDefinition {
@@ -291,12 +284,15 @@ export class WorkspaceIndex {
       }
     }
     for (const name of provided) wanted.delete(name);
+    // Systems the user listed in moro.systems are wanted even when nothing refers to them.
+    const configured = await configuredSystems(this.dependencySettings.systems ?? [], folders);
+    for (const name of configured.keys()) if (!provided.has(name)) wanted.add(name);
     if (!wanted.size) {
       this.dependencySystems.clear();
       this.missingSystems = [];
       return 0;
     }
-    const registry = new Map<string, string>();
+    const registry = new Map<string, string>(configured);
     for (const folder of folders) {
       for (const [name, asd] of ociclSystems(folder)) if (!registry.has(name)) registry.set(name, asd);
     }

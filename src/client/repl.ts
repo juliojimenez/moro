@@ -97,6 +97,8 @@ export class Repl implements vscode.Disposable {
   image: LiveImageInfo | null = null;
   /** Called when the backend info changes (REPL started with a backend, or closed). */
   onImage: (info: LiveImageInfo | null) => void = () => undefined;
+  /** Called when a REPL terminal has been started (after onImage, when there is a backend). */
+  onStarted: () => void = () => undefined;
 
   constructor(private readonly backendPath: string) {
     this.disposables.push(
@@ -210,6 +212,7 @@ export class Repl implements vscode.Disposable {
       this.image = image.info;
       this.onImage(image.info);
     }
+    this.onStarted();
     return this.terminal;
   }
 

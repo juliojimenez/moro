@@ -28,6 +28,8 @@ interface MoroSettings {
   indentation: { specs: Record<string, number> };
   indexing: { exclude: string[]; maxFiles: number };
   dependencies: { index: boolean; registries: string[]; maxFiles: number };
+  /** `.asd` files or directories outside the workspace whose systems are indexed like dependencies. */
+  systems: string[];
   diagnostics: { enabled: boolean };
   hover: { hyperspecUrl: string };
 }
@@ -40,6 +42,7 @@ function defaultSettings(): MoroSettings {
       maxFiles: 3000,
     },
     dependencies: { index: true, registries: [], maxFiles: 4000 },
+    systems: [],
     diagnostics: { enabled: true },
     hover: { hyperspecUrl: 'http://www.lispworks.com/documentation/HyperSpec/Body/' },
   };
@@ -69,6 +72,7 @@ function mergeSettings(raw: unknown): MoroSettings {
     if (Array.isArray(dependencies.registries)) settings.dependencies.registries = dependencies.registries.filter((g): g is string => typeof g === 'string');
     if (typeof dependencies.maxFiles === 'number') settings.dependencies.maxFiles = Math.max(0, Math.floor(dependencies.maxFiles));
   }
+  if (Array.isArray(raw.systems)) settings.systems = raw.systems.filter((g): g is string => typeof g === 'string');
   const diagnostics = raw.diagnostics;
   if (isRecord(diagnostics) && typeof diagnostics.enabled === 'boolean') settings.diagnostics.enabled = diagnostics.enabled;
   const hover = raw.hover;
@@ -117,6 +121,9 @@ function folderPath(uri: string): string | null {
 
 connection.onInitialize((params: InitializeParams): InitializeResult => {
   hasConfiguration = !!params.capabilities.workspace?.configuration;
+  // Clients without workspace/configuration (and tests) may pass the `moro` settings section here.
+  const options = params.initializationOptions;
+  if (isRecord(options) && isRecord(options.settings)) settings = mergeSettings(options.settings);
   workspaceFolders = (params.workspaceFolders ?? []).map((f) => folderPath(f.uri)).filter((p): p is string => !!p);
   if (!workspaceFolders.length && params.rootUri) {
     const root = folderPath(params.rootUri);
@@ -163,6 +170,7 @@ async function refreshSettings(): Promise<void> {
     enabled: settings.dependencies.index,
     registries: settings.dependencies.registries,
     maxFiles: settings.dependencies.maxFiles,
+    systems: settings.systems,
   };
 }
 

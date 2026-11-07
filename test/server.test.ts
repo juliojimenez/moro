@@ -408,3 +408,50 @@ test('diagnostics for broken structure and formatting', async () => {
   assert.equal(edits.length, 2);
   assert.deepEqual(edits.map((e) => [e.range.start.line, e.newText]), [[1, '  '], [2, '    ']]);
 });
+
+test('moro.systems: an .asd outside the workspace is indexed like a dependency (settings via initializationOptions)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'moro-e2e-systems-'));
+  const lib = path.join(dir, 'lib');
+  const songs = path.join(dir, 'songs');
+  fs.mkdirSync(lib);
+  fs.mkdirSync(songs);
+  fs.writeFileSync(path.join(lib, 'lib.asd'), '(defsystem "lib" :components ((:file "lib")))\n');
+  fs.writeFileSync(path.join(lib, 'lib.lisp'), '(defpackage #:lib (:use #:cl) (:export #:play))\n(in-package #:lib)\n(defun play (x)\n  "Play X."\n  x)\n');
+  const songPath = path.join(songs, 'song.lisp');
+  const song = '(in-package #:cl-user)\n(lib:play 1)\n';
+  fs.writeFileSync(songPath, song);
+  const proc2 = spawn(process.execPath, [SERVER, '--stdio'], { stdio: ['pipe', 'pipe', 'pipe'] });
+  const client2 = new LspClient(proc2);
+  try {
+    await client2.request('initialize', {
+      processId: process.pid,
+      rootUri: pathToFileURL(songs).toString(),
+      workspaceFolders: [{ uri: pathToFileURL(songs).toString(), name: 'songs' }],
+      initializationOptions: { settings: { systems: ['../lib/lib.asd'] } },
+      capabilities: { textDocument: { hover: { contentFormat: ['markdown'] } }, workspace: { configuration: false } },
+    });
+    client2.notify('initialized', {});
+    const uri = pathToFileURL(songPath).toString();
+    client2.notify('textDocument/didOpen', { textDocument: { uri, languageId: 'commonlisp', version: 1, text: song } });
+    const position = { line: 1, character: 6 };
+    let hover: { contents: { value: string } } | null = null;
+    for (let i = 0; i < 40 && !hover?.contents.value.includes('Play X.'); i++) {
+      await new Promise((r) => setTimeout(r, 200));
+      hover = await client2.request<{ contents: { value: string } } | null>('textDocument/hover', { textDocument: { uri }, position });
+    }
+    assert.match(hover?.contents.value ?? '(no hover)', /\(play x\)/);
+    assert.match(hover?.contents.value ?? '', /Play X\./);
+    assert.match(hover?.contents.value ?? '', /lib\.lisp:3 \(dependency\)/);
+    const links = await client2.request<Array<{ targetUri: string }>>('textDocument/definition', { textDocument: { uri }, position });
+    assert.equal(links.length, 1);
+    assert.ok(links[0].targetUri.endsWith('/lib/lib.lisp'), links[0].targetUri);
+  } finally {
+    try {
+      await client2.request('shutdown', null);
+      client2.notify('exit', null);
+    } finally {
+      proc2.kill();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }
+});

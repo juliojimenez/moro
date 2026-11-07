@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Systems outside the workspace. The system picker of Load ASDF System and Test ASDF System lists the systems defined in the workspace and those in the new `moro.systems` setting (`.asd` files or directories, absolute, `~`-prefixed or relative to a workspace folder), and offers to browse for an `.asd` anywhere on disk, remembering it in that setting; the new **Add ASDF System from Outside the Workspace…** command does the same from the palette. The directories of all known systems go on ASDF's central registry before a load, so systems that depend on each other resolve without a source-registry setup. The language server indexes the systems in `moro.systems` like dependencies: completion, hover, signature help and go to definition for their exports, read-only. `moro.repl.loadOnStart` names systems to load as soon as the REPL is up and the backend has connected. Both commands accept a system name as an argument, for keybindings and tasks. The server also reads its settings from `initializationOptions.settings` for clients without `workspace/configuration`.
+
 ## 0.3.1
 
 - Backtraces from Clozure CL show the frames of your code only, with arguments printed plainly, instead of CCL's error machinery and evaluator frames with quoted arguments.

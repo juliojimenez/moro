@@ -225,6 +225,22 @@
           "default": "image",
           "description": "Where Evaluate Top-Level Form, Evaluate Selection and Evaluate Buffer run."
         },
+        "moro.repl.loadOnStart": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "ASDF systems loaded when the REPL starts, once the backend has connected: names of systems defined in the workspace or in moro.systems, or anything ASDF can find on its own."
+        },
+        "moro.systems": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "ASDF system definitions outside the workspace: .asd files, or directories holding them; absolute, ~-prefixed, or relative to a workspace folder. Load ASDF System and Test ASDF System offer their systems and put their directories on ASDF's central registry before loading, and the language server indexes them like dependencies (completion, hover, go to definition)."
+        },
         "moro.repl.inlineResults": {
           "type": "boolean",
           "default": true,
@@ -355,6 +371,11 @@
       {
         "command": "moro.repl.testSystem",
         "title": "Test ASDF System",
+        "category": "moro"
+      },
+      {
+        "command": "moro.repl.addSystem",
+        "title": "Add ASDF System from Outside the Workspace…",
         "category": "moro"
       },
       {
