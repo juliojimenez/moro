@@ -219,8 +219,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       void vscode.window.showWarningMessage(`moro: no defsystem found in ${asdPath}.`);
       return undefined;
     }
-    const entry = await rememberSystemFile(asdPath);
-    void vscode.window.showInformationMessage(`moro: ${entry} added to moro.systems; Load ASDF System now offers ${systems.map((s) => s.name).join(', ')}.`);
+    const names = systems.map((s) => s.name).join(', ');
+    try {
+      const entry = await rememberSystemFile(asdPath);
+      void vscode.window.showInformationMessage(`moro: ${entry} added to moro.systems; Load ASDF System now offers ${names}.`);
+    } catch (error) {
+      // Typically a half-applied update: the new code runs but the window still has the old settings
+      // schema, so VS Code refuses to write moro.systems. The chosen system is still usable right now.
+      const message = `moro: could not save ${asdPath} to moro.systems (${String(error instanceof Error ? error.message : error)}). If moro was just updated, reload the window and add it again.`;
+      if (pick) void vscode.window.showWarningMessage(message);
+      else if ((await vscode.window.showWarningMessage(message, 'Load now')) === 'Load now') pick = true;
+    }
     if (!pick) return undefined;
     if (systems.length === 1) return systems[0];
     const picked = await vscode.window.showQuickPick(
@@ -329,7 +338,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   };
   register('moro.repl.loadSystem', (name?: unknown) => systemCommand('load', name));
   register('moro.repl.testSystem', (name?: unknown) => systemCommand('test', name));
-  register('moro.repl.addSystem', () => addSystemFile(false));
+  register('moro.repl.addSystem', async () => {
+    // A system comes back only when it could not be remembered and the user chose to load it anyway.
+    const system = await addSystemFile(false);
+    if (system) await repl.send(systemForm('load', system, systemLoader(), await knownSystems()));
+  });
 
   // Inspection
   const expand = async (expander: 'macroexpand-1' | 'macroexpand') => {
