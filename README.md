@@ -83,19 +83,17 @@ The REPL is a plain terminal, so anything your implementation prints is shown as
 
 ## Known limitations
 
-Each one is tracked as an issue; fix sketches are in the issue bodies.
-
 - Live-image answers need an implementation with threads (SBCL, ECL, CCL, ABCL, Roswell); CLISP's REPL runs without the backend. Source locations from the image come from SBCL only; other implementations answer arglists, documentation and completion. Macroexpansion, describe and apropos still go through the REPL terminal.
 - Evaluations sent to the image never enter the debugger: an error is reported with its backtrace and the form is abandoned. For the implementation's interactive debugger, with restarts, set `moro.repl.evaluateIn` to `terminal` or type the form in the REPL.
 - Highlighting: type positions, definition names and superclass lists are colored by the language server, so they look right only while it is running; a `loop` whose `(` ends the previous line gets no LOOP keyword coloring.
-- No tests run inside a real VS Code window yet ([#9](https://github.com/juliojimenez/moro/issues/9)).
 
 ## Development
 
 ```sh
 npm install
 npm run build        # bundle client and server into dist/
-npm test             # unit tests (node --test) and grammar tests
+npm test             # unit tests (node --test), the language server over stdio, and grammar tests
+npm run test:vscode  # extension host tests in a real VS Code window (downloads VS Code into .vscode-test)
 npm run watch        # rebuild on change; then press F5 in VS Code
 npm run grammar      # regenerate syntaxes/commonlisp.tmLanguage.json
 npm run symbols      # regenerate data/cl-symbols.json (needs sbcl; CLHS_MAP=path/to/Map_Sym.txt adds HyperSpec links)
