@@ -158,6 +158,8 @@ before(async () => {
   workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'moro-e2e-'));
   fs.writeFileSync(path.join(workspace, 'demo.lisp'), DEMO);
   fs.writeFileSync(path.join(workspace, 'other.lisp'), '(in-package #:demo)\n(defun helper () (greet "x"))\n');
+  // Another package with its own `greet`: references and rename must keep them apart.
+  fs.writeFileSync(path.join(workspace, 'elsewhere.lisp'), '(defpackage #:elsewhere (:use #:cl))\n(in-package #:elsewhere)\n(defun greet () :mine)\n(greet)\n(demo:greet "from elsewhere")\n');
   fs.writeFileSync(path.join(workspace, 'demo.asd'), '(defsystem "demo" :depends-on ("greetlib") :components ((:file "demo")))\n');
   // A dependency in a project-local ocicl registry: indexed as a dependency, not as workspace code.
   fs.writeFileSync(path.join(workspace, 'ocicl.csv'), 'greetlib, ghcr.io/ocicl/greetlib@sha256:0, greetlib-1/greetlib.asd\n');
@@ -228,13 +230,14 @@ test('go to definition and references across files', async () => {
   assert.equal(links.length, 1);
   assert.equal(links[0].targetUri, demoUri);
   assert.equal(links[0].targetSelectionRange.start.line, 6);
-  const refs = await client.request<Array<{ uri: string }>>('textDocument/references', {
+  const refs = await client.request<Array<{ uri: string; range: { start: { line: number } } }>>('textDocument/references', {
     textDocument: { uri: demoUri },
     position: position('(greet "world")', 3),
     context: { includeDeclaration: true },
   });
-  assert.equal(refs.length, 5, 'export, defun, two calls in demo.lisp, one in other.lisp');
+  assert.equal(refs.length, 6, 'export, defun, two calls in demo.lisp, one in other.lisp, demo:greet in elsewhere.lisp');
   assert.ok(refs.some((r) => r.uri.endsWith('other.lisp')));
+  assert.ok(!refs.some((r) => r.uri.endsWith('elsewhere.lisp') && r.range.start.line === 2), 'elsewhere::greet is a different symbol');
 });
 
 test('completion offers locals, workspace definitions and standard symbols', async () => {
@@ -273,9 +276,11 @@ test('rename across files', async () => {
     newName: 'salute',
   });
   const uris = Object.keys(edit.changes);
-  assert.equal(uris.length, 2);
+  assert.equal(uris.length, 3, 'demo.lisp, other.lisp and the demo:greet call in elsewhere.lisp');
   assert.equal(edit.changes[demoUri].length, 4);
   assert.ok(edit.changes[demoUri].every((e) => e.newText === 'salute'));
+  const elsewhere = Object.entries(edit.changes).find(([uri]) => uri.endsWith('elsewhere.lisp'))!;
+  assert.equal(elsewhere[1].length, 1, 'only demo:greet, not elsewhere\'s own greet');
 });
 
 test('folding, selection ranges and semantic tokens', async () => {

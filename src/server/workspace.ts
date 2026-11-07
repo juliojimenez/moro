@@ -5,8 +5,9 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { parse, ParseResult, isList, isSymbol, LAMBDA_LIST_KEYWORDS } from '../common/reader';
-import { analyze, Definition, FileAnalysis, Occurrence } from './analysis';
+import { AtomNode, parse, ParseResult, isList, isSymbol, LAMBDA_LIST_KEYWORDS } from '../common/reader';
+import { analyze, Definition, FileAnalysis, Occurrence, packageAtOffset } from './analysis';
+import { PackageModel, ResolvedSymbol, sameSymbol } from './packages';
 import {
   LISP_EXTENSIONS,
   SystemRecord,
@@ -97,6 +98,10 @@ export class WorkspaceIndex {
   missingSystems: string[] = [];
   private scanning: Promise<number> | null = null;
   private exportsCache: Set<string> | null = null;
+  /** Bumped on every change; caches derived from the index check it. */
+  version = 0;
+  private modelVersion = -1;
+  private model: PackageModel | null = null;
 
   get(uri: string): IndexedFile | undefined {
     return this.files.get(uri);
@@ -108,12 +113,86 @@ export class WorkspaceIndex {
     const file: IndexedFile = { uri, parse: result, analysis: analyze(result), fromDisk: options.fromDisk, source };
     this.files.set(uri, file);
     if (source === 'dependency') this.exportsCache = null;
+    this.version++;
     return file;
   }
 
   remove(uri: string): void {
     if (this.files.get(uri)?.source === 'dependency') this.exportsCache = null;
     this.files.delete(uri);
+    this.version++;
+  }
+
+  /** The package model for the current state of the index. */
+  packageModel(): PackageModel {
+    if (!this.model || this.modelVersion !== this.version) {
+      this.model = new PackageModel([...this.allDefinitions()].map((f) => f.def));
+      this.modelVersion = this.version;
+    }
+    return this.model;
+  }
+
+  /** Home package of an occurrence, from its file's in-package and the package model. */
+  resolveOccurrence(file: IndexedFile, occurrence: Occurrence): ResolvedSymbol {
+    return this.packageModel().resolve({
+      name: occurrence.name,
+      pkg: occurrence.pkg,
+      keyword: occurrence.node.kind === 'keyword',
+      uninterned: !!occurrence.node.uninterned,
+      role: occurrence.role,
+      source: occurrence.source,
+      context: packageAtOffset(file.analysis, occurrence.start),
+    });
+  }
+
+  /** Home package of the symbol node under the cursor (which must come from `file.parse`). */
+  resolveSymbol(file: IndexedFile, symbol: AtomNode): ResolvedSymbol {
+    const occurrence = file.analysis.occurrences.get(symbol.name)?.find((o) => o.node === symbol);
+    if (occurrence) return this.resolveOccurrence(file, occurrence);
+    return this.packageModel().resolve({
+      name: symbol.name,
+      pkg: symbol.pkg,
+      keyword: symbol.kind === 'keyword',
+      uninterned: !!symbol.uninterned,
+      context: packageAtOffset(file.analysis, symbol.start),
+    });
+  }
+
+  /** Occurrences of the same symbol as `target` across the index (package-aware). */
+  occurrencesOf(target: ResolvedSymbol): FoundOccurrence[] {
+    if (target.excluded) return [];
+    const out: FoundOccurrence[] = [];
+    for (const file of this.files.values()) {
+      const list = file.analysis.occurrences.get(target.name);
+      if (!list) continue;
+      for (const occurrence of list) {
+        if (sameSymbol(target, this.resolveOccurrence(file, occurrence))) out.push({ file, occurrence });
+      }
+    }
+    return out;
+  }
+
+  /** Home package of a definition: its symbol as seen from the package the definition was written in. */
+  definitionHome(def: Definition): string {
+    return this.packageModel().homeOf(def.name, def.pkg ?? 'COMMON-LISP-USER');
+  }
+
+  /**
+   * Definitions of the symbol `target`: those in its home package when there
+   * are any (or when the target is lenient, every package's), else all of
+   * them so that go to definition still has somewhere to go.
+   */
+  definitionsFor(target: ResolvedSymbol): FoundDefinition[] {
+    const all: FoundDefinition[] = [];
+    for (const file of this.files.values()) {
+      for (const def of file.analysis.flat) {
+        if (def.name === target.name) all.push({ file, def });
+      }
+    }
+    if (target.keyword) return all.filter((f) => f.def.kind === 'package' || f.def.kind === 'system');
+    if (!target.strict) return all;
+    const exact = all.filter((f) => this.definitionHome(f.def) === target.home);
+    return exact.length ? exact : all;
   }
 
   isDependency(uri: string): boolean {
@@ -285,16 +364,16 @@ export class WorkspaceIndex {
     }
   }
 
-  /** Names known to belong to package `pkg`: definitions made in it plus its exports. */
-  symbolsInPackage(pkg: string): Map<string, FoundDefinition | null> {
+  /** Names known to belong to package `pkg` (a name or nickname): definitions made in it plus its exports, re-exports included. */
+  symbolsInPackage(pkg: string, context: string | null = null): Map<string, FoundDefinition | null> {
+    const model = this.packageModel();
+    const canonical = model.canonical(pkg, context);
     const names = new Map<string, FoundDefinition | null>();
     for (const found of this.allDefinitions()) {
-      if (found.def.pkg === pkg && !names.has(found.def.name)) names.set(found.def.name, found);
-      if (found.def.kind === 'package' && found.def.name === pkg) {
-        for (const exported of found.def.exports ?? []) {
-          if (!names.has(exported)) names.set(exported, null);
-        }
-      }
+      if (found.def.pkg && model.canonical(found.def.pkg, null) === canonical && !names.has(found.def.name)) names.set(found.def.name, found);
+    }
+    for (const exported of model.exportsOf(canonical)) {
+      if (!names.has(exported)) names.set(exported, null);
     }
     return names;
   }

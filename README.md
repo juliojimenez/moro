@@ -15,7 +15,7 @@ Common Lisp for Visual Studio Code: syntax highlighting, a language server, a RE
 **Language server**
 
 - Outline and workspace symbols for `defun`, `defmacro`, `defgeneric`, `defmethod` (with qualifiers and specializers), `defvar`, `defparameter`, `defconstant`, `defclass` (slots and accessors), `defstruct` (slots, accessors, constructor, predicate, copier), `define-condition`, `deftype`, `defpackage`, `defsystem` and any other `def...` macro.
-- Go to definition, find references, rename and highlight occurrences across the workspace, package-aware.
+- Go to definition, find references, rename and highlight occurrences across the workspace, package-aware: every occurrence is resolved to its home package from the file's `in-package` and the `defpackage` forms in the index (`:use`, `:import-from`, `:shadow`, `:export`, nicknames and local nicknames), so `app::run` and `other::run` are different symbols. Files whose package has no definition, such as scratch files in `CL-USER`, match by name.
 - Dependencies are indexed too: the systems your `.asd` files depend on (and anything you `ql:quickload` or `asdf:load-system`) are resolved transitively through `ocicl.csv`/`ocicl/`, `.qlot/`, Quicklisp, Roswell, `~/common-lisp`, the ASDF source-registry configuration and `CL_SOURCE_REGISTRY`. Their exported symbols appear in completion, every definition has hover and signature help, and go to definition opens the library source. Rename never edits them.
 - Hover and signature help with the lambda list and docstring, for your definitions and for every standard symbol (arglists and docstrings extracted from SBCL, with a link to the HyperSpec page).
 - Completion of standard symbols, workspace definitions, local variables and parameters in scope, keywords, package-qualified names (`pkg:`), LOOP keywords inside `loop`, and lambda-list keywords.
@@ -87,7 +87,6 @@ Each one is tracked as an issue; fix sketches are in the issue bodies.
 
 - Live-image answers need an implementation with threads (SBCL, ECL, CCL, ABCL, Roswell); CLISP's REPL runs without the backend. Source locations from the image come from SBCL only; other implementations answer arglists, documentation and completion. Macroexpansion, describe and apropos still go through the REPL terminal.
 - Evaluations sent to the image never enter the debugger: an error is reported with its backtrace and the form is abandoned. For the implementation's interactive debugger, with restarts, set `moro.repl.evaluateIn` to `terminal` or type the form in the REPL.
-- References and rename match symbol names across packages, and package nicknames are not resolved ([#8](https://github.com/juliojimenez/moro/issues/8)).
 - Highlighting: type positions, definition names and superclass lists are colored by the language server, so they look right only while it is running; a `loop` whose `(` ends the previous line gets no LOOP keyword coloring.
 - No tests run inside a real VS Code window yet ([#9](https://github.com/juliojimenez/moro/issues/9)).
 

@@ -304,7 +304,7 @@ export async function hover(ctx: ServerContext, file: IndexedFile, position: Pos
   if (local && !symbol.pkg) {
     sections.push(`\`\`\`lisp\n${local.label}\n\`\`\`\n\n*local ${local.kind}*`);
   }
-  const defs = ctx.index.findDefinitions(symbol.name, symbol.pkg);
+  const defs = ctx.index.definitionsFor(ctx.index.resolveSymbol(file, symbol));
   for (const found of defs.slice(0, 4)) sections.push(definitionMarkdown(found));
   if (isStandardPackage(symbol.pkg)) {
     const standard = lookupStandard(symbol.name);
@@ -488,14 +488,14 @@ export async function completion(ctx: ServerContext, file: IndexedFile, position
       separator = '::';
       rest = rest.slice(1);
     }
-    const pkgName = pkgText.toUpperCase();
+    const pkgName = ctx.index.packageModel().canonical(pkgText.toUpperCase(), packageHere);
     const lead = `${functionQuote ? "#'" : ''}${pkgText}${separator}`;
-    if (pkgName === 'CL' || pkgName === 'COMMON-LISP') {
+    if (pkgName === 'COMMON-LISP') {
       for (const symbol of allStandard()) {
         push(symbol.name, `${lead}${matchCase(rest, symbol.name)}`, standardCompletionKind(symbol), `2${symbol.name}`, symbol.arglist, { source: 'std', name: symbol.name });
       }
     } else {
-      for (const [name, found] of ctx.index.symbolsInPackage(pkgName)) {
+      for (const [name, found] of ctx.index.symbolsInPackage(pkgName, packageHere)) {
         const label = found ? found.def.label : name.toLowerCase();
         push(label, `${lead}${matchCase(rest, name)}`, found ? completionKind(found.def.kind) : CompletionItemKind.Value, `1${name}`, found?.def.lambdaList, { source: 'ws', name, pkg: pkgName });
       }
@@ -571,9 +571,9 @@ interface ArglistSource {
   detail?: string;
 }
 
-function arglistsFor(ctx: ServerContext, head: AtomNode): ArglistSource[] {
+function arglistsFor(ctx: ServerContext, file: IndexedFile, head: AtomNode): ArglistSource[] {
   const out: ArglistSource[] = [];
-  const defs = ctx.index.findDefinitions(head.name, head.pkg).filter((f) => f.def.lambdaList);
+  const defs = ctx.index.definitionsFor(ctx.index.resolveSymbol(file, head)).filter((f) => f.def.lambdaList);
   for (const found of defs.slice(0, 6)) {
     out.push({ head: head.text, arglist: found.def.lambdaList!, documentation: found.def.docstring, detail: found.def.detail });
   }
@@ -595,7 +595,7 @@ export async function signatureHelp(ctx: ServerContext, file: IndexedFile, posit
   while (list && hops < 3) {
     const head = headSymbol(list);
     if (head && head.end <= offset) {
-      sources = arglistsFor(ctx, head);
+      sources = arglistsFor(ctx, file, head);
       if (sources.length) break;
     }
     list = list.parent;
@@ -648,7 +648,9 @@ export async function definition(ctx: ServerContext, file: IndexedFile, position
   const symbol = symbolAt(parse, offset);
   if (!symbol) return [];
   const origin = rangeOf(parse, symbol.nameStart, symbol.end);
-  if (symbol.kind === 'keyword') {
+  const target = ctx.index.resolveSymbol(file, symbol);
+  if (symbol.kind === 'keyword' || target.excluded) {
+    // Keywords and package designators: the package or system of that name.
     const found = ctx.index.findDefinitions(symbol.name).filter((f) => f.def.kind === 'package' || f.def.kind === 'system');
     return definitionLinks(found, origin);
   }
@@ -658,7 +660,7 @@ export async function definition(ctx: ServerContext, file: IndexedFile, position
       return [LocationLink.create(file.uri, rangeOf(parse, local.node.start, local.node.end), rangeOf(parse, local.node.nameStart, local.node.end), origin)];
     }
   }
-  const links = definitionLinks(ctx.index.findDefinitions(symbol.name, symbol.pkg), origin);
+  const links = definitionLinks(ctx.index.definitionsFor(target), origin);
   if (links.length || !ctx.live.connected) return links;
   return liveDefinitionLinks(await ctx.live.definitions(symbol.name, livePackage(parse, offset, symbol)), origin);
 }
@@ -691,24 +693,26 @@ export function references(ctx: ServerContext, file: IndexedFile, position: Posi
   const symbol = symbolAt(parse, offsetOf(parse, position));
   if (!symbol) return [];
   return ctx.index
-    .findOccurrences(symbol.name, symbol.kind === 'keyword')
+    .occurrencesOf(ctx.index.resolveSymbol(file, symbol))
     .map(({ file: f, occurrence }) => Location.create(f.uri, rangeOf(f.parse, occurrence.nameStart, occurrence.end)));
 }
 
-export function documentHighlights(file: IndexedFile, position: Position): DocumentHighlight[] {
+export function documentHighlights(ctx: ServerContext, file: IndexedFile, position: Position): DocumentHighlight[] {
   const parse = file.parse;
   const symbol = symbolAt(parse, offsetOf(parse, position));
   if (!symbol) return [];
-  const occurrences = file.analysis.occurrences.get(symbol.name) ?? [];
-  return occurrences
-    .filter((o) => (o.node.kind === 'keyword') === (symbol.kind === 'keyword'))
-    .map((o) => DocumentHighlight.create(rangeOf(parse, o.nameStart, o.end), DocumentHighlightKind.Text));
+  const target = ctx.index.resolveSymbol(file, symbol);
+  return ctx.index
+    .occurrencesOf(target)
+    .filter((found) => found.file === file)
+    .map(({ occurrence }) => DocumentHighlight.create(rangeOf(parse, occurrence.nameStart, occurrence.end), DocumentHighlightKind.Text));
 }
 
-export function prepareRename(file: IndexedFile, position: Position): { range: Range; placeholder: string } | null {
+export function prepareRename(ctx: ServerContext, file: IndexedFile, position: Position): { range: Range; placeholder: string } | null {
   const parse = file.parse;
   const symbol = symbolAt(parse, offsetOf(parse, position));
   if (!symbol || !symbol.name) return null;
+  if (ctx.index.resolveSymbol(file, symbol).excluded) return null; // package names are not renamed
   return { range: rangeOf(parse, symbol.nameStart, symbol.end), placeholder: parse.text.slice(symbol.nameStart, symbol.end) };
 }
 
@@ -717,7 +721,7 @@ export function rename(ctx: ServerContext, file: IndexedFile, position: Position
   const symbol = symbolAt(parse, offsetOf(parse, position));
   if (!symbol || !symbol.name) return null;
   const changes: Record<string, TextEdit[]> = {};
-  for (const { file: f, occurrence } of ctx.index.findOccurrences(symbol.name, symbol.kind === 'keyword')) {
+  for (const { file: f, occurrence } of ctx.index.occurrencesOf(ctx.index.resolveSymbol(file, symbol))) {
     if (f.source === 'dependency') continue; // library sources are read-only
     const original = f.parse.text.slice(occurrence.nameStart, occurrence.end);
     const letters = original.replace(/[^a-zA-Z]/g, '');

@@ -57,10 +57,30 @@ export interface Definition {
   pkg: string | null;
   /** Exported symbol names for packages. */
   exports?: string[];
+  /** The other defpackage options that decide which package a symbol belongs to. */
+  packageOptions?: PackageOptions;
   /** Lower-case system names an ASDF system depends on (including :defsystem-depends-on). */
   dependsOn?: string[];
   children?: Definition[];
 }
+
+/** Normalized names from a defpackage / define-package form. */
+export interface PackageOptions {
+  nicknames: string[];
+  /** :use, and uiop's :mix, :use-reexport, :mix-reexport. */
+  uses: string[];
+  /** :shadow and :shadowing-import-from names: always this package's own symbols. */
+  shadows: string[];
+  /** :import-from and :shadowing-import-from: symbol name -> source package. */
+  imports: Array<[name: string, source: string]>;
+  /** :local-nicknames: nickname -> package. */
+  localNicknames: Array<[nickname: string, pkg: string]>;
+  /** Packages whose exports this one re-exports (:reexport, :use-reexport, :mix-reexport). */
+  reexports: string[];
+}
+
+/** What a symbol occurrence denotes when it is not a plain reference. */
+export type OccurrenceRole = 'package' | 'export' | 'import';
 
 export interface Occurrence {
   name: string;
@@ -69,6 +89,16 @@ export interface Occurrence {
   end: number;
   nameStart: number;
   node: AtomNode;
+  /** 'package' for package designators, 'export' for names in a defpackage's own lists, 'import' for imported names. */
+  role?: OccurrenceRole;
+  /** The package an 'export' belongs to or an 'import' comes from. */
+  source?: string;
+}
+
+export interface PackageTransition {
+  /** Offset from which `pkg` is the current package. */
+  offset: number;
+  pkg: string;
 }
 
 export interface FileAnalysis {
@@ -82,6 +112,26 @@ export interface FileAnalysis {
   packages: string[];
   /** Lower-case system names loaded with ql:quickload, asdf:load-system and friends. */
   requestedSystems: string[];
+  /** The (in-package ...) forms in order: the current package from each offset on. */
+  packageTransitions: PackageTransition[];
+}
+
+/** The current package at `offset`: the closest preceding in-package, or null. */
+export function packageAtOffset(analysis: FileAnalysis, offset: number): string | null {
+  const transitions = analysis.packageTransitions;
+  let lo = 0;
+  let hi = transitions.length - 1;
+  let found: string | null = null;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (transitions[mid].offset <= offset) {
+      found = transitions[mid].pkg;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return found;
 }
 
 interface Ctx {
@@ -90,6 +140,49 @@ interface Ctx {
   definitions: Definition[];
   flat: Definition[];
   requestedSystems: Set<string>;
+  packageTransitions: PackageTransition[];
+}
+
+const PACKAGE_DEFINERS = new Set(['DEFPACKAGE', 'DEFINE-PACKAGE']);
+/** defpackage options whose elements name packages rather than symbols. */
+const PACKAGE_LIST_OPTIONS = new Set(['USE', 'MIX', 'USE-REEXPORT', 'MIX-REEXPORT', 'REEXPORT', 'NICKNAMES', 'LOCAL-NICKNAMES', 'DOCUMENTATION']);
+/** defpackage options whose elements are this package's own symbols. */
+const OWN_SYMBOL_OPTIONS = new Set(['EXPORT', 'INTERN', 'SHADOW']);
+const IMPORT_OPTIONS = new Set(['IMPORT-FROM', 'SHADOWING-IMPORT-FROM']);
+
+/** The role of a symbol occurrence inside defpackage / in-package forms, if any. */
+function occurrenceRole(node: AtomNode): { role: OccurrenceRole; source?: string } | undefined {
+  const parent = node.parent;
+  if (!parent) return undefined;
+  const parentHead = headName(parent);
+  if (parentHead === 'IN-PACKAGE' && parent.children[1] === node) return { role: 'package' };
+  if (parentHead && PACKAGE_DEFINERS.has(parentHead) && parent.children[1] === node) return { role: 'package' };
+  // An option list of a defpackage: (:export #:a) or, for local nicknames, (:local-nicknames (#:nick #:pkg)).
+  const option = parent.children[0] === node ? undefined : parent;
+  const form = option?.parent;
+  if (option && form && isList(form)) {
+    const formHead = headName(form);
+    const key = headName(option);
+    if (formHead && PACKAGE_DEFINERS.has(formHead) && key) {
+      if (PACKAGE_LIST_OPTIONS.has(key)) return { role: 'package' };
+      if (OWN_SYMBOL_OPTIONS.has(key)) {
+        const pkg = designatorName(form.children[1]);
+        return { role: 'export', source: pkg ?? undefined };
+      }
+      if (IMPORT_OPTIONS.has(key)) {
+        if (option.children[1] === node) return { role: 'package' };
+        const source = designatorName(option.children[1]);
+        return { role: 'import', source: source ?? undefined };
+      }
+    }
+    // (:local-nicknames (nick pkg) ...): both elements of each pair are package designators.
+    const grand = form.parent;
+    if (grand && headName(form) === 'LOCAL-NICKNAMES' && isList(grand)) {
+      const grandHead = headName(grand);
+      if (grandHead && PACKAGE_DEFINERS.has(grandHead)) return { role: 'package' };
+    }
+  }
+  return undefined;
 }
 
 /** (ql:quickload ...), (asdf:load-system ...) and friends: operator name -> accepted package prefixes. */
@@ -124,7 +217,7 @@ const RECURSE_INTO = new Set(['PROGN', 'EVAL-WHEN', 'LOCALLY', 'LET', 'LET*', 'F
 const RECURSE_SKIP_FIRST = new Set(['EVAL-WHEN', 'LET', 'LET*', 'FLET', 'LABELS', 'MACROLET', 'SYMBOL-MACROLET']);
 
 export function analyze(result: ParseResult): FileAnalysis {
-  const ctx: Ctx = { result, pkg: null, definitions: [], flat: [], requestedSystems: new Set() };
+  const ctx: Ctx = { result, pkg: null, definitions: [], flat: [], requestedSystems: new Set(), packageTransitions: [] };
   for (const form of result.forms) visitTopLevel(ctx, form);
   walk(result.forms, (node) => {
     if (node.kind === 'list') collectRequestedSystems(ctx, node);
@@ -141,7 +234,13 @@ export function analyze(result: ParseResult): FileAnalysis {
       list = [];
       occurrences.set(node.name, list);
     }
-    list.push({ name: node.name, pkg: node.pkg, start: node.start, end: node.end, nameStart: node.nameStart, node });
+    const occurrence: Occurrence = { name: node.name, pkg: node.pkg, start: node.start, end: node.end, nameStart: node.nameStart, node };
+    const role = node.kind === 'symbol' ? occurrenceRole(node) : undefined;
+    if (role) {
+      occurrence.role = role.role;
+      if (role.source) occurrence.source = role.source;
+    }
+    list.push(occurrence);
   });
 
   return {
@@ -151,6 +250,7 @@ export function analyze(result: ParseResult): FileAnalysis {
     keywords,
     packages: ctx.flat.filter((d) => d.kind === 'package').map((d) => d.name),
     requestedSystems: [...ctx.requestedSystems].sort(),
+    packageTransitions: ctx.packageTransitions,
   };
 }
 
@@ -183,7 +283,10 @@ function visitTopLevel(ctx: Ctx, form: Node): void {
   if (!head) return;
   if (head === 'IN-PACKAGE') {
     const name = designatorName(form.children[1]);
-    if (name) ctx.pkg = name;
+    if (name) {
+      ctx.pkg = name;
+      ctx.packageTransitions.push({ offset: form.end, pkg: name });
+    }
     return;
   }
   if (RECURSE_INTO.has(head)) {
@@ -532,19 +635,64 @@ function structDefinition(ctx: Ctx, form: ListNode): Definition | null {
   return makeDef(ctx, form, info, 'struct', { docstring, children: kids.length ? kids : undefined });
 }
 
+function designatorNames(nodes: Node[]): string[] {
+  return nodes.map((node) => designatorName(node)).filter((name): name is string => !!name);
+}
+
 function packageDefinition(ctx: Ctx, form: ListNode): Definition | null {
   const children = form.children;
   const info = nameInfo(children[1]);
   if (!info) return null;
   const exports: string[] = [];
+  const options: PackageOptions = { nicknames: [], uses: [], shadows: [], imports: [], localNicknames: [], reexports: [] };
   for (const option of children.slice(2)) {
-    if (!isList(option) || optionKey(option) !== 'EXPORT') continue;
-    for (const item of option.children.slice(1)) {
-      const name = designatorName(item);
-      if (name) exports.push(name);
+    if (!isList(option)) continue;
+    const key = optionKey(option);
+    const rest = option.children.slice(1);
+    switch (key) {
+      case 'EXPORT':
+        exports.push(...designatorNames(rest));
+        break;
+      case 'NICKNAMES':
+        options.nicknames.push(...designatorNames(rest));
+        break;
+      case 'USE':
+      case 'MIX':
+        options.uses.push(...designatorNames(rest));
+        break;
+      case 'USE-REEXPORT':
+      case 'MIX-REEXPORT':
+        options.uses.push(...designatorNames(rest));
+        options.reexports.push(...designatorNames(rest));
+        break;
+      case 'REEXPORT':
+        options.reexports.push(...designatorNames(rest));
+        break;
+      case 'SHADOW':
+        options.shadows.push(...designatorNames(rest));
+        break;
+      case 'IMPORT-FROM':
+      case 'SHADOWING-IMPORT-FROM': {
+        const source = designatorName(rest[0]);
+        if (!source) break;
+        const names = designatorNames(rest.slice(1));
+        for (const name of names) options.imports.push([name, source]);
+        if (key === 'SHADOWING-IMPORT-FROM') options.shadows.push(...names);
+        break;
+      }
+      case 'LOCAL-NICKNAMES':
+        for (const pair of rest) {
+          if (!isList(pair)) continue;
+          const nickname = designatorName(pair.children[0]);
+          const pkg = designatorName(pair.children[1]);
+          if (nickname && pkg) options.localNicknames.push([nickname, pkg]);
+        }
+        break;
+      default:
+        break;
     }
   }
-  return makeDef(ctx, form, info, 'package', { docstring: optionDoc(children, 2), exports });
+  return makeDef(ctx, form, info, 'package', { docstring: optionDoc(children, 2), exports, packageOptions: options });
 }
 
 /** Names in a :depends-on list: strings, symbols, (:version name "1.0"), (:feature expr name). */
