@@ -228,6 +228,41 @@ const cases: Array<[string, string[], string[], IndentSettings?]> = [
     ['(loop for i', '        of-type fixnum', '        from 0', '      for s', '        fixnum from 1', '      collect i)'],
   ],
   [
+    'feature expression alone on a line is the same argument as the form below it',
+    ['(list 1', '#+sbcl', '2', '3)'],
+    ['(list 1', '      #+sbcl', '      2', '      3)'],
+  ],
+  [
+    'feature expression on a distinguished argument keeps the body at body indent',
+    ['(let', '#+sbcl', '((x 1))', '(foo x))'],
+    ['(let', '    #+sbcl', '    ((x 1))', '  (foo x))'],
+  ],
+  [
+    'feature expression before a body form',
+    ['(defun foo (x)', '#-sbcl', '(declare (ignore x))', '#+sbcl', '(bar x))'],
+    ['(defun foo (x)', '  #-sbcl', '  (declare (ignore x))', '  #+sbcl', '  (bar x))'],
+  ],
+  [
+    'feature expression with a compound test and a quoted form',
+    ['(list', "#+(or sbcl ccl) 'fast", "#-(or sbcl ccl)", "'slow)"],
+    ['(list', " #+(or sbcl ccl) 'fast", ' #-(or sbcl ccl)', " 'slow)"],
+  ],
+  [
+    'loop: feature expression alone on a line before a clause',
+    ['(loop for x in xs', '#+sbcl', 'do (print x)', 'collect x)'],
+    ['(loop for x in xs', '      #+sbcl', '      do (print x)', '      collect x)'],
+  ],
+  [
+    'loop: feature-prefixed clause keyword still introduces a body',
+    ['(loop for x in xs', '#+sbcl do (print x)', '(print y)', 'collect x)'],
+    ['(loop for x in xs', '      #+sbcl do (print x)', '                (print y)', '      collect x)'],
+  ],
+  [
+    'lambda list with a feature-prefixed parameter on its own line',
+    ['(defun foo (a', '#+sbcl', 'b', '&optional', 'c)', 'a)'],
+    ['(defun foo (a', '            #+sbcl', '            b', '            &optional', '              c)', '  a)'],
+  ],
+  [
     'defmethod with qualifier',
     ['(defmethod foo :around ((x bar) y)', '(call-next-method))'],
     ['(defmethod foo :around ((x bar) y)', '  (call-next-method))'],
@@ -519,6 +554,11 @@ test('indentationForLine: line out of range is null', () => {
 test('indentationForLine: loop clause position on a fresh line', () => {
   const result = parse('(loop for x in xs\n      when (foo x)\n');
   assert.equal(indentationForLine(result, 2, defaultSettings()), 8);
+});
+
+test('indentationForLine: fresh line after a feature expression alone on a line', () => {
+  assert.equal(indentationForLine(parse('(list 1\n      #+sbcl\n'), 2, defaultSettings()), 6);
+  assert.equal(indentationForLine(parse('(let\n    #+sbcl\n'), 2, defaultSettings()), 4);
 });
 
 test('indentationForLine: fresh line after a body keyword, after a body form, after a clause', () => {
