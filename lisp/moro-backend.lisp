@@ -413,10 +413,13 @@
     (error () (one-line (safe-prin1 frame)))))
 
 (defun capture-frames ()
-  "The frames of this thread as (frame-object . text), innermost first, without the machinery."
+  "The frames of this thread as (frame-object . text), innermost first, without the machinery.
+   SB-DEBUG and SB-DI internals are named with two colons: they exist in every
+   supported SBCL but are exported only by recent releases (2.2.9 keeps
+   MAP-BACKTRACE internal)."
   #+sbcl
   (let ((frames '()))
-    (handler-case (sb-debug:map-backtrace (lambda (frame) (push (cons frame (frame-text frame)) frames)) :count 80)
+    (handler-case (sb-debug::map-backtrace (lambda (frame) (push (cons frame (frame-text frame)) frames)) :count 80)
       (error () nil))
     (setf frames (nreverse frames))
     (let ((end (position-if (lambda (entry) (search "MORO-BACKEND::EVALUATE-TEXT" (cdr entry))) frames :from-end t)))
@@ -428,14 +431,14 @@
   "The variables of FRAME as (name . value), value :%unavailable when the compiler kept no trace of it."
   #+sbcl
   (handler-case
-      (let* ((debug-fun (sb-di:frame-debug-fun frame))
-             (location (sb-di:frame-code-location frame))
+      (let* ((debug-fun (sb-di::frame-debug-fun frame))
+             (location (sb-di::frame-code-location frame))
              (vars (sb-di::debug-fun-debug-vars debug-fun)))
         (when vars
           (loop for var across vars
-                collect (cons (string-downcase (symbol-name (sb-di:debug-var-symbol var)))
-                              (if (eq (sb-di:debug-var-validity var location) :valid)
-                                  (sb-di:debug-var-value var frame)
+                collect (cons (string-downcase (symbol-name (sb-di::debug-var-symbol var)))
+                              (if (eq (sb-di::debug-var-validity var location) :valid)
+                                  (sb-di::debug-var-value var frame)
                                   :%unavailable)))))
     (error () nil))
   #-sbcl (progn frame nil))
