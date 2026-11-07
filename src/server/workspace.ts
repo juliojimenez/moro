@@ -7,9 +7,21 @@ import * as path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parse, ParseResult, isList, isSymbol, LAMBDA_LIST_KEYWORDS } from '../common/reader';
 import { analyze, Definition, FileAnalysis, Occurrence } from './analysis';
+import {
+  LISP_EXTENSIONS,
+  SystemRecord,
+  collectSystemFiles,
+  defaultRegistryRoots,
+  discoverSystems,
+  ociclSystems,
+  primarySystemName,
+  resolveDependencies,
+} from './systems';
 
-export const LISP_EXTENSIONS = new Set(['.lisp', '.lsp', '.cl', '.asd', '.asdf', '.ros']);
+export { LISP_EXTENSIONS };
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
+
+export type FileSource = 'workspace' | 'dependency';
 
 export interface IndexedFile {
   uri: string;
@@ -17,6 +29,20 @@ export interface IndexedFile {
   analysis: FileAnalysis;
   /** True when the content came from disk rather than an open editor. */
   fromDisk: boolean;
+  /** Workspace files are the user's; dependency files come from ASDF systems the workspace uses. */
+  source: FileSource;
+}
+
+export interface UpdateOptions {
+  fromDisk: boolean;
+  /** Defaults to the file's previous source, or 'workspace' for a new file. */
+  source?: FileSource;
+}
+
+export interface DependencySettings {
+  enabled: boolean;
+  registries: string[];
+  maxFiles: number;
 }
 
 export interface FoundDefinition {
@@ -64,21 +90,48 @@ export function globToRegExp(glob: string): RegExp {
 export class WorkspaceIndex {
   readonly files = new Map<string, IndexedFile>();
   settings: IndexingSettings = { exclude: [], maxFiles: 3000 };
+  dependencySettings: DependencySettings = { enabled: true, registries: [], maxFiles: 4000 };
+  /** Systems resolved by the last dependency scan, by primary name. */
+  readonly dependencySystems = new Map<string, SystemRecord>();
+  /** Wanted systems no registry provided. */
+  missingSystems: string[] = [];
   private scanning: Promise<number> | null = null;
+  private exportsCache: Set<string> | null = null;
 
   get(uri: string): IndexedFile | undefined {
     return this.files.get(uri);
   }
 
-  update(uri: string, text: string, fromDisk: boolean): IndexedFile {
+  update(uri: string, text: string, options: UpdateOptions): IndexedFile {
     const result = parse(text);
-    const file: IndexedFile = { uri, parse: result, analysis: analyze(result), fromDisk };
+    const source = options.source ?? this.files.get(uri)?.source ?? 'workspace';
+    const file: IndexedFile = { uri, parse: result, analysis: analyze(result), fromDisk: options.fromDisk, source };
     this.files.set(uri, file);
+    if (source === 'dependency') this.exportsCache = null;
     return file;
   }
 
   remove(uri: string): void {
+    if (this.files.get(uri)?.source === 'dependency') this.exportsCache = null;
     this.files.delete(uri);
+  }
+
+  isDependency(uri: string): boolean {
+    return this.files.get(uri)?.source === 'dependency';
+  }
+
+  /** Symbol names exported by packages defined in dependency files: what dependencies offer to completion. */
+  dependencyExports(): Set<string> {
+    if (this.exportsCache) return this.exportsCache;
+    const out = new Set<string>();
+    for (const file of this.files.values()) {
+      if (file.source !== 'dependency') continue;
+      for (const def of file.analysis.flat) {
+        if (def.kind === 'package') for (const name of def.exports ?? []) out.add(name);
+      }
+    }
+    this.exportsCache = out;
+    return out;
   }
 
   /** Re-reads a file from disk; removes it when it no longer exists. */
@@ -97,7 +150,7 @@ export class WorkspaceIndex {
         return;
       }
       const text = await fs.promises.readFile(filePath, 'utf8');
-      this.update(uri, text, true);
+      this.update(uri, text, { fromDisk: true });
     } catch {
       this.remove(uri);
     }
@@ -128,7 +181,7 @@ export class WorkspaceIndex {
           const stat = await fs.promises.stat(filePath);
           if (stat.size > MAX_FILE_BYTES) continue;
           const text = await fs.promises.readFile(filePath, 'utf8');
-          this.update(uri, text, true);
+          this.update(uri, text, { fromDisk: true, source: 'workspace' });
           count++;
         } catch (error) {
           log(`Could not index ${filePath}: ${String(error)}`);
@@ -136,6 +189,64 @@ export class WorkspaceIndex {
       }
     }
     log(`Indexed ${count} Lisp files in ${Date.now() - started} ms`);
+    return count;
+  }
+
+  /**
+   * Indexes the ASDF systems the workspace depends on: :depends-on of the
+   * workspace's own systems plus ql:quickload / asdf:load-system calls,
+   * resolved transitively through the registries. Returns the number of files read.
+   */
+  async scanDependencies(folders: string[], log: (message: string) => void): Promise<number> {
+    if (!this.dependencySettings.enabled) return 0;
+    const started = Date.now();
+    const wanted = new Set<string>();
+    const provided = new Set<string>();
+    for (const file of this.files.values()) {
+      if (file.source !== 'workspace') continue;
+      for (const name of file.analysis.requestedSystems) wanted.add(primarySystemName(name));
+      for (const def of file.analysis.flat) {
+        if (def.kind !== 'system') continue;
+        provided.add(primarySystemName(def.name));
+        for (const dep of def.dependsOn ?? []) wanted.add(primarySystemName(dep));
+      }
+    }
+    for (const name of provided) wanted.delete(name);
+    if (!wanted.size) {
+      this.dependencySystems.clear();
+      this.missingSystems = [];
+      return 0;
+    }
+    const registry = new Map<string, string>();
+    for (const folder of folders) {
+      for (const [name, asd] of ociclSystems(folder)) if (!registry.has(name)) registry.set(name, asd);
+    }
+    const roots = defaultRegistryRoots(folders, { extra: this.dependencySettings.registries });
+    for (const [name, asd] of await discoverSystems(roots)) if (!registry.has(name)) registry.set(name, asd);
+    const resolved = await resolveDependencies(wanted, provided, registry);
+    this.dependencySystems.clear();
+    for (const system of resolved.systems) this.dependencySystems.set(system.name, system);
+    this.missingSystems = resolved.missing;
+
+    const files = await collectSystemFiles(resolved.systems, this.dependencySettings.maxFiles);
+    let count = 0;
+    for (const filePath of files) {
+      const uri = pathToFileURL(filePath).toString();
+      const existing = this.files.get(uri);
+      if (existing && (existing.source === 'workspace' || !existing.fromDisk)) continue;
+      try {
+        const stat = await fs.promises.stat(filePath);
+        if (stat.size > MAX_FILE_BYTES) continue;
+        this.update(uri, await fs.promises.readFile(filePath, 'utf8'), { fromDisk: true, source: 'dependency' });
+        count++;
+      } catch (error) {
+        log(`Could not index ${filePath}: ${String(error)}`);
+      }
+    }
+    log(
+      `Indexed ${count} files from ${resolved.systems.length} dependency systems in ${Date.now() - started} ms` +
+        (resolved.missing.length ? `; not found: ${resolved.missing.join(', ')}` : ''),
+    );
     return count;
   }
 

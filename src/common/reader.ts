@@ -621,11 +621,11 @@ export function headSymbol(list: ListNode): AtomNode | null {
   return isSymbol(first) && first.kind === 'symbol' ? first : null;
 }
 
-/** Normalized head symbol name of a list (without package), or null. */
+/** Normalized name of a list's first element when it is a symbol or keyword (`(:tree ...)`), else null. */
 export function headName(node: Node | null | undefined): string | null {
   if (!node || node.kind !== 'list') return null;
-  const head = headSymbol(node);
-  return head ? head.name : null;
+  const first = node.children[0];
+  return isSymbol(first) ? first.name : null;
 }
 
 /** The characters of a string token without its quotes (escapes left as written). */

@@ -57,6 +57,8 @@ export interface Definition {
   pkg: string | null;
   /** Exported symbol names for packages. */
   exports?: string[];
+  /** Lower-case system names an ASDF system depends on (including :defsystem-depends-on). */
+  dependsOn?: string[];
   children?: Definition[];
 }
 
@@ -78,6 +80,8 @@ export interface FileAnalysis {
   keywords: Set<string>;
   /** Normalized names of packages defined in the file. */
   packages: string[];
+  /** Lower-case system names loaded with ql:quickload, asdf:load-system and friends. */
+  requestedSystems: string[];
 }
 
 interface Ctx {
@@ -85,7 +89,19 @@ interface Ctx {
   pkg: string | null;
   definitions: Definition[];
   flat: Definition[];
+  requestedSystems: Set<string>;
 }
+
+/** (ql:quickload ...), (asdf:load-system ...) and friends: operator name -> accepted package prefixes. */
+const SYSTEM_LOADERS = new Map<string, Set<string | null>>([
+  ['QUICKLOAD', new Set(['QL', 'QUICKLISP', 'QUICKLISP-CLIENT'])],
+  ['LOAD-SYSTEM', new Set(['ASDF', null])],
+  ['LOAD-SYSTEMS', new Set(['ASDF', null])],
+  ['REQUIRE-SYSTEM', new Set(['ASDF', null])],
+  ['TEST-SYSTEM', new Set(['ASDF', null])],
+  ['OPERATE', new Set(['ASDF'])],
+  ['OOS', new Set(['ASDF'])],
+]);
 
 const FUNCTION_LIKE = new Map<string, DefKind>([
   ['DEFUN', 'function'],
@@ -108,8 +124,11 @@ const RECURSE_INTO = new Set(['PROGN', 'EVAL-WHEN', 'LOCALLY', 'LET', 'LET*', 'F
 const RECURSE_SKIP_FIRST = new Set(['EVAL-WHEN', 'LET', 'LET*', 'FLET', 'LABELS', 'MACROLET', 'SYMBOL-MACROLET']);
 
 export function analyze(result: ParseResult): FileAnalysis {
-  const ctx: Ctx = { result, pkg: null, definitions: [], flat: [] };
+  const ctx: Ctx = { result, pkg: null, definitions: [], flat: [], requestedSystems: new Set() };
   for (const form of result.forms) visitTopLevel(ctx, form);
+  walk(result.forms, (node) => {
+    if (node.kind === 'list') collectRequestedSystems(ctx, node);
+  });
 
   const occurrences = new Map<string, Occurrence[]>();
   const keywords = new Set<string>();
@@ -131,7 +150,31 @@ export function analyze(result: ParseResult): FileAnalysis {
     occurrences,
     keywords,
     packages: ctx.flat.filter((d) => d.kind === 'package').map((d) => d.name),
+    requestedSystems: [...ctx.requestedSystems].sort(),
   };
+}
+
+/** System names named by a string, keyword, symbol or quoted list of those. */
+function systemNames(node: Node | undefined): string[] {
+  if (!node) return [];
+  const datum = isList(node) && headName(node) === 'QUOTE' ? node.children[1] : node;
+  if (!datum) return [];
+  if (isList(datum)) return datum.children.flatMap((child) => (isList(child) ? [] : systemNames(child)));
+  if (datum.kind === 'string' || datum.kind === 'symbol' || datum.kind === 'keyword') {
+    const name = designatorName(datum);
+    return name ? [name.toLowerCase()] : [];
+  }
+  return [];
+}
+
+function collectRequestedSystems(ctx: Ctx, list: ListNode): void {
+  const head = list.children[0];
+  if (!isSymbol(head) || head.kind !== 'symbol') return;
+  const packages = SYSTEM_LOADERS.get(head.name);
+  if (!packages || !packages.has(head.pkg)) return;
+  // (asdf:operate 'asdf:load-op "name") and (asdf:oos 'load-op "name") name the system second.
+  const argument = head.name === 'OPERATE' || head.name === 'OOS' ? list.children[2] : list.children[1];
+  for (const name of systemNames(argument)) ctx.requestedSystems.add(name);
 }
 
 function visitTopLevel(ctx: Ctx, form: Node): void {
@@ -504,17 +547,35 @@ function packageDefinition(ctx: Ctx, form: ListNode): Definition | null {
   return makeDef(ctx, form, info, 'package', { docstring: optionDoc(children, 2), exports });
 }
 
+/** Names in a :depends-on list: strings, symbols, (:version name "1.0"), (:feature expr name). */
+function dependencyNames(node: Node | undefined): string[] {
+  if (!isList(node)) return [];
+  const out: string[] = [];
+  for (const item of node.children) {
+    if (isList(item)) {
+      const head = headName(item);
+      const name = head === 'VERSION' ? designatorName(item.children[1]) : head === 'FEATURE' ? designatorName(item.children[2]) : null;
+      if (name) out.push(name.toLowerCase());
+      continue;
+    }
+    const name = designatorName(item);
+    if (name) out.push(name.toLowerCase());
+  }
+  return out;
+}
+
 function systemDefinition(ctx: Ctx, form: ListNode): Definition | null {
   const children = form.children;
   const info = nameInfo(children[1]);
   if (!info) return null;
   let docstring: string | undefined;
-  for (let i = 2; i + 1 < children.length; i += 2) {
+  const dependsOn: string[] = [];
+  for (let i = 2; i + 1 < children.length; i++) {
     const key = children[i];
     const value = children[i + 1];
-    if (isSymbol(key) && key.kind === 'keyword' && key.name === 'DESCRIPTION' && value.kind === 'string') {
-      docstring = unescapeString(value.text);
-    }
+    if (!isSymbol(key) || key.kind !== 'keyword') continue;
+    if (key.name === 'DESCRIPTION' && value.kind === 'string') docstring = unescapeString(value.text);
+    if (key.name === 'DEPENDS-ON' || key.name === 'DEFSYSTEM-DEPENDS-ON') dependsOn.push(...dependencyNames(value));
   }
-  return makeDef(ctx, form, info, 'system', { docstring, detail: 'ASDF system' });
+  return makeDef(ctx, form, info, 'system', { docstring, detail: 'ASDF system', dependsOn: [...new Set(dependsOn)] });
 }

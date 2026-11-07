@@ -25,8 +25,8 @@ test('bodyArity counts required parameters before &body', () => {
 
 test('index lookups across files', () => {
   const index = new WorkspaceIndex();
-  index.update('file:///a.lisp', '(defpackage #:app (:use #:cl) (:export #:run))\n(in-package #:app)\n(defun run () (helper))\n(defmacro with-x (a &body b))', false);
-  index.update('file:///b.lisp', '(in-package #:other)\n(defun helper () (run))\n(defun run () :other)', true);
+  index.update('file:///a.lisp', '(defpackage #:app (:use #:cl) (:export #:run))\n(in-package #:app)\n(defun run () (helper))\n(defmacro with-x (a &body b))', { fromDisk: false });
+  index.update('file:///b.lisp', '(in-package #:other)\n(defun helper () (run))\n(defun run () :other)', { fromDisk: true });
   assert.equal(index.findDefinitions('RUN').length, 2);
   assert.equal(index.findDefinitions('RUN', 'APP').length, 1);
   assert.equal(index.findDefinitions('RUN', 'NOWHERE').length, 2, 'unknown package falls back to all');

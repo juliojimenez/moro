@@ -181,7 +181,7 @@ function definitionMarkdown(found: FoundDefinition): string {
   const line = lineOf(file.parse, def.range[0]) + 1;
   const parts = [`\`\`\`lisp\n${signatureOf(def)}\n\`\`\``];
   const what = def.detail ? `${definerFor(def.kind)} ${escapeMarkdown(def.detail)}` : definerFor(def.kind);
-  const where = `${escapeMarkdown(basename(file.uri))}:${line}`;
+  const where = `${escapeMarkdown(basename(file.uri))}:${line}${file.source === 'dependency' ? ' (dependency)' : ''}`;
   parts.push(`*${what}* in ${def.pkg ? `\`${def.pkg.toLowerCase()}\` · ` : ''}${where}`);
   if (def.docstring) parts.push(docToMarkdown(def.docstring));
   return parts.join('\n\n');
@@ -453,18 +453,21 @@ export function completion(ctx: ServerContext, file: IndexedFile, position: Posi
     for (const keyword of LOOP_KEYWORDS) push(keyword, `${lead}${matchCase(bare, keyword)}`, CompletionItemKind.Keyword, `1${keyword}`, 'loop keyword');
   }
 
-  // Workspace definitions
+  // Workspace definitions, then the exported symbols of dependency systems
   const wsSeen = new Set<string>();
+  const dependencyExports = ctx.index.dependencyExports();
   for (const found of ctx.index.allDefinitions()) {
-    const { def } = found;
+    const { def, file } = found;
     if (def.kind === 'slot' || wsSeen.has(def.name) || seen.has(def.name)) continue;
+    const isDependency = file.source === 'dependency';
+    if (isDependency && !dependencyExports.has(def.name)) continue;
     wsSeen.add(def.name);
-    push(def.label, `${lead}${matchCase(bare, def.name)}`, completionKind(def.kind), `1${def.name}`, def.lambdaList ?? def.detail ?? definerFor(def.kind), { source: 'ws', name: def.name, pkg: def.pkg });
+    push(def.label, `${lead}${matchCase(bare, def.name)}`, completionKind(def.kind), `${isDependency ? '3' : '1'}${def.name}`, def.lambdaList ?? def.detail ?? definerFor(def.kind), { source: 'ws', name: def.name, pkg: def.pkg });
   }
 
   // Standard symbols
   for (const symbol of allStandard()) {
-    if (seen.has(symbol.name.toUpperCase())) continue;
+    if (seen.has(symbol.name.toUpperCase()) || wsSeen.has(symbol.name.toUpperCase())) continue;
     push(symbol.name, `${lead}${matchCase(bare, symbol.name)}`, standardCompletionKind(symbol), `2${symbol.name}`, symbol.arglist ?? symbol.kinds.map(kindLabel).join(', '), { source: 'std', name: symbol.name });
   }
 
@@ -607,6 +610,7 @@ export function rename(ctx: ServerContext, file: IndexedFile, position: Position
   if (!symbol || !symbol.name) return null;
   const changes: Record<string, TextEdit[]> = {};
   for (const { file: f, occurrence } of ctx.index.findOccurrences(symbol.name, symbol.kind === 'keyword')) {
+    if (f.source === 'dependency') continue; // library sources are read-only
     const original = f.parse.text.slice(occurrence.nameStart, occurrence.end);
     const letters = original.replace(/[^a-zA-Z]/g, '');
     const replacement = letters.length > 0 && letters === letters.toUpperCase() ? newName.toUpperCase() : newName;
@@ -686,7 +690,14 @@ export function workspaceSymbols(ctx: ServerContext, query: string): SymbolInfor
     out.push(SymbolInformation.create(def.label, symbolKind(def.kind), nameRange(file.parse, def), file.uri, def.detail ?? def.pkg?.toLowerCase()));
     if (out.length >= 500) break;
   }
-  out.sort((a, b) => Number(!a.name.toLowerCase().startsWith(q)) - Number(!b.name.toLowerCase().startsWith(q)) || a.name.localeCompare(b.name));
+  const dependency = new Set<string>();
+  for (const [uri, file] of ctx.index.files) if (file.source === 'dependency') dependency.add(uri);
+  out.sort(
+    (a, b) =>
+      Number(!a.name.toLowerCase().startsWith(q)) - Number(!b.name.toLowerCase().startsWith(q)) ||
+      Number(dependency.has(a.location.uri)) - Number(dependency.has(b.location.uri)) ||
+      a.name.localeCompare(b.name),
+  );
   return out;
 }
 
