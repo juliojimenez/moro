@@ -1,0 +1,30 @@
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "friday"
+    groups:
+      # Client, server and textdocument ship from the same repository and
+      # the client and server must agree on the protocol version.
+      language-server:
+        patterns:
+          - "vscode-language*"
+      # Build and test tooling: minor and patch bumps as one weekly PR.
+      # Major bumps still get a PR of their own.
+      dev-tooling:
+        dependency-type: "development"
+        update-types:
+          - "minor"
+          - "patch"
+    ignore:
+      # Must stay at the engines.vscode floor: vsce refuses to package when
+      # the types are newer than the engine. Raised by hand with engines.vscode.
+      - dependency-name: "@types/vscode"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "friday"
